@@ -1,5 +1,8 @@
 from tqdm import tqdm
 import ujson as json
+import dgl
+import torch
+import numpy as np
 
 docred_rel2id = json.load(open('meta/rel2id.json', 'r'))
 cdr_rel2id = {'1:NR:2': 0, '1:CID:2': 1}
@@ -13,6 +16,49 @@ def chunks(l, n):
         res += [l[i:i + n]]
     return res
 
+def build_graph(entity_pos):
+    u = []
+    v = []
+
+    mention_idx_offset = []
+    # mention to mention co-reference
+    mention_idx = 0
+    for entity in entity_pos:
+        mention_idx_offset.append([])
+        for mention_id1, _ in enumerate(entity):
+            mention_idx_offset[-1].append(mention_idx + mention_id1)
+
+            for mention_id2, _ in enumerate(entity):
+                if mention_id1 == mention_id2:
+                    continue
+                u.append(mention_idx + mention_id1)
+                v.append(mention_idx + mention_id2)
+        mention_idx += len(entity)
+
+    # document to mention
+    document_idx = mention_idx
+    mention_idx = 0
+    for entity in entity_pos:
+        for mention_id, _ in enumerate(entity):
+            u.append(document_idx)
+            v.append(mention_idx + mention_id)
+        mention_idx += len(entity)
+
+    for entity_idx1, _ in enumerate(entity_pos):
+        for entity_idx2, _ in enumerate(entity_pos):
+            if entity_idx1 == entity_idx2:
+                continue
+            for mention_id1, _ in enumerate(entity_pos[entity_idx1]):
+                for mention_id2, _ in enumerate(entity_pos[entity_idx2]):
+                    u.append(mention_idx_offset[entity_idx1][mention_id1])
+                    v.append(mention_idx_offset[entity_idx2][mention_id2])
+    
+    # graph builder
+    for edge_id in range(len(u)):
+            assert u[edge_id] != v[edge_id], f"Exist self edge {u[edge_id]} to {v[edge_id]}"
+    graph = dgl.graph((torch.tensor(u), torch.tensor(v)), num_nodes=document_idx + 1)
+    graph = dgl.add_self_loop(graph)
+    return graph
 
 def read_docred(file_in, tokenizer, max_seq_length=1024):
     i_line = 0
@@ -93,13 +139,16 @@ def read_docred(file_in, tokenizer, max_seq_length=1024):
         input_ids = tokenizer.convert_tokens_to_ids(sents)
         input_ids = tokenizer.build_inputs_with_special_tokens(input_ids)
 
+        graph = build_graph(entity_pos)
         i_line += 1
-        feature = {'input_ids': input_ids,
-                   'entity_pos': entity_pos,
-                   'labels': relations,
-                   'hts': hts,
-                   'title': sample['title'],
-                   }
+        feature = {
+            'input_ids': input_ids,
+            'entity_pos': entity_pos,
+            'labels': relations,
+            'hts': hts,
+            'title': sample['title'],
+            'graph': graph
+        }
         features.append(feature)
 
     print("# of documents {}.".format(i_line))

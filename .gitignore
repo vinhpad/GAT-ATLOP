@@ -1,3 +1,7 @@
 
 *.json
 *.pyc
+wandb
+dataset
+__pycache__
+.vscode
