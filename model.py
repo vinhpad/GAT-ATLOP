@@ -50,11 +50,9 @@ class DocREModel(nn.Module):
     def get_hrt(self, sequence_output, attention, entity_pos, hts):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
         n, h, _, c = attention.size()
-        hss, tss, rss, features = [], [], []
+        hss, tss, rss = [], [], []
 
         for i in range(len(entity_pos)):
-            features.append([])
-
             entity_embs, entity_atts = [], []
             for e in entity_pos[i]:
                 if len(e) > 1:
@@ -63,7 +61,6 @@ class DocREModel(nn.Module):
                         if start + offset < c:
                             # In case the entity mention is truncated due to limited max seq length.
                             e_emb.append(sequence_output[i, start + offset])
-                            features[-1].append(sequence_output[i, start + offset])
                             e_att.append(attention[i, :, start + offset])
                     if len(e_emb) > 0:
                         e_emb = torch.logsumexp(torch.stack(e_emb, dim=0), dim=0)
@@ -81,9 +78,6 @@ class DocREModel(nn.Module):
                         e_att = torch.zeros(h, c).to(attention)
                 entity_embs.append(e_emb)
                 entity_atts.append(e_att)
-            
-            features[-1].append(sequence_output[i, 0])
-
             entity_embs = torch.stack(entity_embs, dim=0)  # [n_e, d]
             entity_atts = torch.stack(entity_atts, dim=0)  # [n_e, h, seq_len]
 
@@ -102,31 +96,56 @@ class DocREModel(nn.Module):
         hss = torch.cat(hss, dim=0)
         tss = torch.cat(tss, dim=0)
         rss = torch.cat(rss, dim=0)
-        return hss, rss, tss, features
-    
-    def mention_intergate(self, sequence_output, features, entity_pos, hts):
+        return hss, rss, tss
+
+    def graph(self, sequence_output, graphs, attention, entity_pos, hts):
+        offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
+        n, h, _, c = attention.size()
+
+        num_node = sum([graph.num_nodes() for graph in graphs])
+        graph_fea = torch.zeros(num_node, self.config.hidden_size, device=sequence_output.device)
+        
+        node_id = 0
+        for i in range(len(entity_pos)):
+            mention_index = 0
+            for e in entity_pos[i]:
+                for start, end in e:
+                    if start + offset < c:
+                        # In case the entity mention is truncated due to limited max seq length.
+                        graph_fea[node_id, :] = sequence_output[i, start + offset]
+                    else:
+                        graph_fea[node_id, :] = torch.zeros(self.config.hidden_size).to(sequence_output)
+                    mention_index += 1
+                    node_id = node_id + 1
+
+        
+        graph_fea = self.gat(graph_fea, graphs)
+
+        node_offset = 0
         h_entity, t_entity = [], []
+        
         for i in range(len(entity_pos)):
             entity_embs = []
             mention_index = 0
             for e in entity_pos[i]:
-                e_emb = features[i, mention_index:mention_index + len(e), :]
+                e_emb = graph_fea[node_offset + mention_index: node_offset + mention_index + len(e), :]
                 mention_index += len(e)
 
                 e_emb = torch.logsumexp(e_emb, dim=0) if len(e) > 1 else e_emb.squeeze(0)
                 entity_embs.append(e_emb)
-
+            node_offset = node_offset + len(entity_pos)
+            
             entity_embs = torch.stack(entity_embs, dim=0)
             ht_i = torch.LongTensor(hts[i]).to(sequence_output.device)
             hs = torch.index_select(entity_embs, 0, ht_i[:, 0])
             ts = torch.index_select(entity_embs, 0, ht_i[:, 1])
             h_entity.append(hs)
             t_entity.append(ts)
-        
+
         h_entity = torch.cat(h_entity, dim=0)
         t_entity = torch.cat(t_entity, dim=0)
         return h_entity, t_entity
-        
+    
     def forward(self,
                 input_ids=None,
                 attention_mask=None,
@@ -137,11 +156,10 @@ class DocREModel(nn.Module):
                 ):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
-        hs, rs, ts, ms = self.get_hrt(sequence_output, attention, entity_pos, hts)
+        hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
 
         # GAT enhancement
-        ms = self.gat(ms, graphs)
-        h, t = self.mention_intergate(sequence_output, ms, entity_pos, hts)
+        h, t = self.graph(sequence_output, graphs, attention, entity_pos, hts)
 
         hs = torch.tanh(self.head_extractor(torch.cat([hs, rs, h], dim=1)))
         ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs, t], dim=1)))

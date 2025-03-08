@@ -4,6 +4,10 @@ import dgl
 import torch
 import numpy as np
 
+from spacy.tokens import Doc
+import spacy
+
+nlp = spacy.load('en_core_web_sm')
 docred_rel2id = json.load(open('meta/rel2id.json', 'r'))
 cdr_rel2id = {'1:NR:2': 0, '1:CID:2': 1}
 gda_rel2id = {'1:NR:2': 0, '1:GDA:2': 1}
@@ -15,6 +19,42 @@ def chunks(l, n):
         assert len(l[i:i + n]) == n
         res += [l[i:i + n]]
     return res
+
+def get_anaphors(sents, mentions):
+    potential_mentions = []
+
+    for sent_id, sent in enumerate(sents):
+        doc_spacy = Doc(nlp.vocab, words=sent)
+        for name, tool in nlp.pipeline:
+            if name != 'ner':
+                tool(doc_spacy)
+
+        for token in doc_spacy:
+            potential_mention = ''
+            if token.dep_ == 'det' and token.text.lower() == 'the':
+                potential_name = doc_spacy.text[token.idx:token.head.idx + len(token.head.text)]
+                pos_start, pos_end = token.i, token.i + len(potential_name.split(' '))
+                potential_mention = {
+                    'pos': [pos_start, pos_end],
+                    'type': 'MISC',
+                    'sent_id': sent_id,
+                    'name': potential_name
+                }
+            if token.pos_ == 'PRON':
+                potential_name = token.text
+                pos_start = sent.index(token.text)
+                potential_mention = {
+                    'pos': [pos_start, pos_start + 1],
+                    'type': 'MISC',
+                    'sent_id': sent_id,
+                    'name': potential_name
+                }
+
+            if potential_mention:
+                if not any(mention in potential_mention['name'] for mention in mentions):
+                    potential_mentions.append(potential_mention)
+
+    return potential_mentions
 
 def build_graph(entity_pos):
     u = []
@@ -106,6 +146,13 @@ def read_docred(file_in, tokenizer, max_seq_length=1024):
                 else:
                     train_triple[(label['h'], label['t'])].append(
                         {'relation': r, 'evidence': evidence})
+
+        mentions = set([m['name'] for e in entities for m in e])
+
+        potential_mention = get_anaphors(sample['sents'], mentions)
+
+        entities.append(potential_mention)
+
 
         entity_pos = []
         for e in entities:

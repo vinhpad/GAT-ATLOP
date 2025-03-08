@@ -39,7 +39,7 @@ def train(args, model, train_features, dev_features, test_features):
                     'labels': batch[2],
                     'entity_pos': batch[3],
                     'hts': batch[4],
-                    'graphs': batch[5].to(args.device)
+                    'graphs': batch[5]
                 }
 
                 outputs = model(**inputs)
@@ -95,7 +95,7 @@ def evaluate(args, model, features, tag="dev"):
             'attention_mask': batch[1].to(args.device),
             'entity_pos': batch[3],
             'hts': batch[4],
-            'graphs': batch[5].to(args.device)
+            'graphs': batch[5]
         }
 
         with torch.no_grad():
@@ -127,7 +127,7 @@ def report(args, model, features):
             'attention_mask': batch[1].to(args.device),
             'entity_pos': batch[3],
             'hts': batch[4],
-            'graphs': batch[5].to(args.device)
+            'graphs': batch[5]
         }
 
         with torch.no_grad():
