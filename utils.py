@@ -1,7 +1,7 @@
 import torch
 import random
 import numpy as np
-
+import dgl
 
 def set_seed(args):
     random.seed(args.seed)
@@ -19,6 +19,9 @@ def collate_fn(batch):
     entity_pos = [f["entity_pos"] for f in batch]
     hts = [f["hts"] for f in batch]
     graphs = [f["graph"] for f in batch]
+
+    graphs = dgl.batch(graphs)
+
     input_ids = torch.tensor(input_ids, dtype=torch.long)
     input_mask = torch.tensor(input_mask, dtype=torch.float)
     output = (input_ids, input_mask, labels, entity_pos, hts, graphs)

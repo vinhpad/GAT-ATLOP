@@ -26,14 +26,8 @@ class DocREModel(nn.Module):
         self.gat = GAT(
             num_layers=2,
             in_dim=768,
-            num_hidden=500,
-            num_classes=768,
-            heads=([2] * 2) + [1],
-            activation=F.elu,
-            feat_drop=0,
-            attn_drop=0,
-            negative_slope=0.2,
-            residual=False
+            out_dim=768,
+            num_head=8
         )
 
     def encode(self, input_ids, attention_mask):
@@ -100,40 +94,44 @@ class DocREModel(nn.Module):
 
     def graph(self, sequence_output, graphs, attention, entity_pos, hts):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
-        n, h, _, c = attention.size()
+        batch_size, h, _, c = attention.size()
 
-        num_node = sum([graph.num_nodes() for graph in graphs])
-        graph_fea = torch.zeros(num_node, self.config.hidden_size, device=sequence_output.device)
+        num_node = graphs.num_node()
+        features = torch.zeros(num_node, self.config.hidden_size, device=sequence_output.device)
         
-        node_id = 0
-        for i in range(len(entity_pos)):
-            mention_index = 0
-            for e in entity_pos[i]:
-                for start, end in e:
+        node_offset = 0
+        for batch_id in range(batch_size):
+            
+            for entity_per_batch in entity_pos[batch_id]:
+
+                for start, end in entity_per_batch:
+                    
                     if start + offset < c:
-                        # In case the entity mention is truncated due to limited max seq length.
-                        graph_fea[node_id, :] = sequence_output[i, start + offset]
+                        features[node_offset, :] = sequence_output[i, start + offset]
+                    
                     else:
-                        graph_fea[node_id, :] = torch.zeros(self.config.hidden_size).to(sequence_output)
-                    mention_index += 1
-                    node_id = node_id + 1
+                        features[node_offset, :] = torch.zeros(self.config.hidden_size).to(sequence_output)
+                    
+                    node_offset = node_offset + 1
+            
+            features[node_offset, :] = sequence_output[batch_id, 0]
+            node_offset = node_offset + 1
 
+        features = self.gat(features, graphs)
         
-        graph_fea = self.gat(graph_fea, graphs)
 
         node_offset = 0
         h_entity, t_entity = [], []
-        
         for i in range(len(entity_pos)):
             entity_embs = []
             mention_index = 0
             for e in entity_pos[i]:
-                e_emb = graph_fea[node_offset + mention_index: node_offset + mention_index + len(e), :]
+                e_emb = features[node_offset + mention_index: node_offset + mention_index + len(e), :]
                 mention_index += len(e)
 
                 e_emb = torch.logsumexp(e_emb, dim=0) if len(e) > 1 else e_emb.squeeze(0)
                 entity_embs.append(e_emb)
-            node_offset = node_offset + len(entity_pos)
+            node_offset = node_offset + (len(entity_pos[i]) + 1)
             
             entity_embs = torch.stack(entity_embs, dim=0)
             ht_i = torch.LongTensor(hts[i]).to(sequence_output.device)
@@ -153,12 +151,12 @@ class DocREModel(nn.Module):
                 entity_pos=None,
                 hts=None,
                 graphs=None
-                ):
+        ):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
         hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
 
-        # GAT enhancement
+        # GATv2 enhancement
         h, t = self.graph(sequence_output, graphs, attention, entity_pos, hts)
 
         hs = torch.tanh(self.head_extractor(torch.cat([hs, rs, h], dim=1)))

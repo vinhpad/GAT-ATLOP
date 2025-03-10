@@ -1,42 +1,48 @@
 from torch import nn
-from dgl.nn import GATConv
-import dgl
-import torch
+from dgl.nn import GATv2Conv
+
 class GAT(nn.Module):
-    def __init__(self,
-                 num_layers,
-                 in_dim,
-                 num_hidden,
-                 num_classes,
-                 heads,
-                 activation,
-                 feat_drop,
-                 attn_drop,
-                 negative_slope,
-                 residual
+    def __init__(
+            self,
+            num_layers=2,
+            in_dim=768,
+            out_dim=768,
+            num_head=8
         ):
         super(GAT, self).__init__()
         self.num_layers = num_layers
         self.gat_layers = nn.ModuleList()
-        self.activation = activation
 
-        self.gat_layers.append(GATConv(
-            in_dim, num_hidden, heads[0],
-            feat_drop, attn_drop, negative_slope, False, self.activation))
+        self.gat_layers.append(
+            GATv2Conv(
+                in_dim, 
+                in_dim // num_head, 
+                num_head
+            )
+        )
         
-        for l in range(1, num_layers):
-            self.gat_layers.append(GATConv(
-                num_hidden * heads[l-1], num_hidden, heads[l],
-                feat_drop, attn_drop, negative_slope, residual, self.activation))
+        for _ in range(1, num_layers - 1):
+            self.gat_layers.append(
+                GATv2Conv(
+                    in_dim,
+                    in_dim // num_head,
+                    num_head
+                )
+            )
         
-        self.gat_layers.append(GATConv(
-            num_hidden * heads[-2], num_classes, heads[-1],
-            feat_drop, attn_drop, negative_slope, residual, None))
+        self.gat_layers.append(
+            GATv2Conv(
+                in_dim, 
+                out_dim, 
+                num_head
+            )
+        )
 
-    def forward(self, inputs, graphs):
-        batched_graph = dgl.batch(graphs).to(inputs.device)
-        h = inputs
+    def forward(self, input, graph):
+        h = input
+
         for l in range(self.num_layers):
-            h = self.gat_layers[l](batched_graph, h).flatten(1)
-        logits = self.gat_layers[-1](batched_graph, h).mean(1)
+            h = self.gat_layers[l](graph, h).flatten(1)
+
+        logits = self.gat_layers[-1](graph, h).mean(1)
         return logits
