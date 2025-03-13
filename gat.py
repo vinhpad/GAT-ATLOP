@@ -13,36 +13,17 @@ class GAT(nn.Module):
         self.num_layers = num_layers
         self.gat_layers = nn.ModuleList()
 
-        self.gat_layers.append(
-            GATv2Conv(
-                in_dim, 
-                in_dim // num_head, 
-                num_head
-            )
-        )
-        
-        for _ in range(1, num_layers - 1):
+        for _ in range(num_layers - 1):
             self.gat_layers.append(
-                GATv2Conv(
-                    in_dim,
-                    in_dim // num_head,
-                    num_head
-                )
+                GATv2Conv(in_dim, in_dim//num_head , num_head, activation = nn.ELU())
             )
         
-        self.gat_layers.append(
-            GATv2Conv(
-                in_dim, 
-                out_dim, 
-                num_head
-            )
-        )
+        self.out_layer = GATv2Conv(in_dim, out_dim, 1, activation = nn.ELU())
 
     def forward(self, input, graph):
         h = input
 
-        for l in range(self.num_layers):
-            h = self.gat_layers[l](graph, h).flatten(1)
-
-        logits = self.gat_layers[-1](graph, h).mean(1)
+        for layer in self.gat_layers:
+            h = layer(graph, h).flatten(1)
+        logits = self.out_layer(graph, h).squeeze(1)
         return logits

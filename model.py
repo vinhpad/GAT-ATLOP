@@ -6,6 +6,9 @@ from long_seq import process_long_input
 from losses import ATLoss
 import torch.nn.functional as F
 
+# import dgl
+# import matplotlib.pyplot as plt
+# import networkx as nx
 
 class DocREModel(nn.Module):
     def __init__(self, config, model, emb_size=768, block_size=64, num_labels=-1):
@@ -15,8 +18,8 @@ class DocREModel(nn.Module):
         self.hidden_size = config.hidden_size
         self.loss_fnt = ATLoss()
 
-        self.head_extractor = nn.Linear(3 * config.hidden_size, emb_size)
-        self.tail_extractor = nn.Linear(3 * config.hidden_size, emb_size)
+        self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
+        self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.bilinear = nn.Linear(emb_size * block_size, config.num_labels)
 
         self.emb_size = emb_size
@@ -96,15 +99,16 @@ class DocREModel(nn.Module):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
         batch_size, h, _, c = attention.size()
 
-        num_node = graphs.num_node()
-        features = torch.zeros(num_node, self.config.hidden_size, device=sequence_output.device)
-        
-        node_offset = 0
-        for batch_id in range(batch_size):
-            
-            for entity_per_batch in entity_pos[batch_id]:
+        num_node = graphs.num_nodes()
 
-                for start, end in entity_per_batch:
+        features = torch.zeros(num_node, self.config.hidden_size, device=sequence_output.device)
+
+        node_offset = 0
+        for i in range(batch_size):
+            
+            for entity_per_batch in entity_pos[i]:
+
+                for start, _ in entity_per_batch:
                     
                     if start + offset < c:
                         features[node_offset, :] = sequence_output[i, start + offset]
@@ -114,10 +118,10 @@ class DocREModel(nn.Module):
                     
                     node_offset = node_offset + 1
             
-            features[node_offset, :] = sequence_output[batch_id, 0]
+            features[node_offset, :] = sequence_output[i, 0]
             node_offset = node_offset + 1
 
-        features = self.gat(features, graphs)
+        features = self.gat(features, graphs.to(sequence_output.device))
         
 
         node_offset = 0
@@ -130,6 +134,7 @@ class DocREModel(nn.Module):
                 mention_index += len(e)
 
                 e_emb = torch.logsumexp(e_emb, dim=0) if len(e) > 1 else e_emb.squeeze(0)
+
                 entity_embs.append(e_emb)
             node_offset = node_offset + (len(entity_pos[i]) + 1)
             
@@ -159,8 +164,8 @@ class DocREModel(nn.Module):
         # GATv2 enhancement
         h, t = self.graph(sequence_output, graphs, attention, entity_pos, hts)
 
-        hs = torch.tanh(self.head_extractor(torch.cat([hs, rs, h], dim=1)))
-        ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs, t], dim=1)))
+        hs = torch.tanh(self.head_extractor(torch.cat([h, rs], dim=1)))
+        ts = torch.tanh(self.tail_extractor(torch.cat([t, rs], dim=1)))
         b1 = hs.view(-1, self.emb_size // self.block_size, self.block_size)
         b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)
         bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.emb_size * self.block_size)
