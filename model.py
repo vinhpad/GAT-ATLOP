@@ -54,13 +54,17 @@ class DocREModel(nn.Module):
         Calculate entity representation using attention mechanism from paper
         entity_mentions: entity mentions tensor [num_entities, max_mentions, hidden_size]
         local_context: context vector from hrt [num_pairs, hidden_size]
-        hts: head-tail pairs [num_pairs, 2]
+        hts: list of head-tail pairs for each batch
         """
         # Transform local context
         q_c = self.W_q(local_context)  # [num_pairs, hidden_size]
         
-        # Get head and tail indices efficiently
-        indices = torch.tensor(hts, device=local_context.device)
+        # Convert list of hts to flat indices
+        all_hts = []
+        for batch_hts in hts:
+            all_hts.extend(batch_hts)
+        indices = torch.tensor(all_hts, device=local_context.device)
+        
         h_indices, t_indices = indices[:, 0], indices[:, 1]
         
         # Process head and tail mentions together
