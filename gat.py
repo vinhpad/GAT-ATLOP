@@ -19,7 +19,7 @@ class GAT(nn.Module):
         self.norms = nn.ModuleList()
         self.dropout = nn.Dropout(dropout)
 
-        for _ in range(num_layers):
+        for _ in range(num_layers - 1):
             self.gat_layers.append(
                 GATv2Conv(in_dim, in_dim//num_head, num_head, activation=nn.ELU())
             )
