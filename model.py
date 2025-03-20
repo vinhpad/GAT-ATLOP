@@ -52,46 +52,41 @@ class DocREModel(nn.Module):
     def get_entity_representation(self, entity_mentions, local_context, hts):
         """
         Calculate entity representation using attention mechanism from paper
-        entity_mentions: list of mentions for each entity [num_entity, num_mentions, hidden_size]
-        local_context: context vector from hrt [total_num_pairs, hidden_size]
+        entity_mentions: entity mentions tensor [num_entities, max_mentions, hidden_size]
+        local_context: context vector from hrt [num_pairs, hidden_size]
         hts: head-tail pairs [num_pairs, 2]
         """
         # Transform local context
         q_c = self.W_q(local_context)  # [num_pairs, hidden_size]
         
-        # Get head mentions and tail mentions for all pairs
-        h_indices = torch.tensor([ht[0] for ht in hts], device=local_context.device)
-        t_indices = torch.tensor([ht[1] for ht in hts], device=local_context.device)
+        # Get head and tail indices efficiently
+        indices = torch.tensor(hts, device=local_context.device)
+        h_indices, t_indices = indices[:, 0], indices[:, 1]
         
-        # Process head entities
-        h_mentions = entity_mentions[h_indices]  # [num_pairs, num_mentions, hidden_size]
-        k_h = self.W_k(h_mentions)  # [num_pairs, num_mentions, hidden_size]
+        # Process head and tail mentions together
+        ht_mentions = torch.cat([
+            entity_mentions[h_indices],  # [num_pairs, max_mentions, hidden_size]
+            entity_mentions[t_indices]   # [num_pairs, max_mentions, hidden_size]
+        ], dim=1)  # [num_pairs, 2*max_mentions, hidden_size]
         
-        # Calculate attention scores for head entities
-        # a^i_(h,t) = W_q c_(h,t) W_k m_s / sqrt(d)
-        h_scores = torch.bmm(k_h, q_c.unsqueeze(-1)).squeeze(-1)  # [num_pairs, num_mentions]
-        h_scores = h_scores / math.sqrt(self.hidden_size)
+        # Transform mentions
+        k_ht = self.W_k(ht_mentions)  # [num_pairs, 2*max_mentions, hidden_size]
         
-        # Apply softmax to get attention weights
-        h_attention_weights = F.softmax(h_scores, dim=-1)  # [num_pairs, num_mentions]
+        # Calculate attention scores for both head and tail
+        scores = torch.bmm(k_ht, q_c.unsqueeze(-1)).squeeze(-1)  # [num_pairs, 2*max_mentions]
+        scores = scores / math.sqrt(self.hidden_size)
         
-        # Calculate head entity representations
-        # e^h_(h,t) = sum_i(a^i_(h,t) m_s)
-        h_entity = torch.bmm(h_attention_weights.unsqueeze(1), h_mentions).squeeze(1)  # [num_pairs, hidden_size]
+        # Split scores for head and tail
+        h_scores, t_scores = scores.chunk(2, dim=1)
         
-        # Process tail entities
-        t_mentions = entity_mentions[t_indices]  # [num_pairs, num_mentions, hidden_size]
-        k_t = self.W_k(t_mentions)  # [num_pairs, num_mentions, hidden_size]
+        # Apply softmax separately for head and tail
+        h_attention_weights = F.softmax(h_scores, dim=-1)  # [num_pairs, max_mentions]
+        t_attention_weights = F.softmax(t_scores, dim=-1)  # [num_pairs, max_mentions]
         
-        # Calculate attention scores for tail entities
-        t_scores = torch.bmm(k_t, q_c.unsqueeze(-1)).squeeze(-1)  # [num_pairs, num_mentions]
-        t_scores = t_scores / math.sqrt(self.hidden_size)
-        
-        # Apply softmax to get attention weights
-        t_attention_weights = F.softmax(t_scores, dim=-1)  # [num_pairs, num_mentions]
-        
-        # Calculate tail entity representations
-        t_entity = torch.bmm(t_attention_weights.unsqueeze(1), t_mentions).squeeze(1)  # [num_pairs, hidden_size]
+        # Calculate entity representations
+        h_mentions, t_mentions = entity_mentions[h_indices], entity_mentions[t_indices]
+        h_entity = torch.bmm(h_attention_weights.unsqueeze(1), h_mentions).squeeze(1)
+        t_entity = torch.bmm(t_attention_weights.unsqueeze(1), t_mentions).squeeze(1)
         
         return h_entity, t_entity
 
@@ -122,7 +117,7 @@ class DocREModel(nn.Module):
         # Calculate local context
         rss = []  # [batch_size * num_pairs, hidden_size]
         for i in range(len(entity_pos)):
-            entity_atts = [], []
+            entity_atts = []
             for e in entity_pos[i]:
                 if len(e) > 1:
                     e_att = []
@@ -153,20 +148,28 @@ class DocREModel(nn.Module):
         local_context = rss
 
         # Process entities with local context
+        all_entity_embs = []  # [num_entities, max_mentions, hidden_size]
         node_offset = 0
-        h_entity, t_entity = [], []
+        max_mentions = max(len(e) for entities in entity_pos for e in entities)
+        
         for i in range(len(entity_pos)):
-            entity_embs = []
-            mention_index = 0
+            batch_entity_embs = []
             for e in entity_pos[i]:
                 # Get mentions for current entity
-                e_mentions = features[node_offset + mention_index: node_offset + mention_index + len(e), :]
-                mention_index += len(e)
-                entity_embs.append(e_mentions)
-            node_offset = node_offset + (len(entity_pos[i]) + 1)
-            
+                e_mentions = features[node_offset: node_offset + len(e), :]
+                # Pad to max_mentions
+                if len(e) < max_mentions:
+                    padding = torch.zeros(max_mentions - len(e), self.config.hidden_size, device=features.device)
+                    e_mentions = torch.cat([e_mentions, padding], dim=0)
+                batch_entity_embs.append(e_mentions)
+                node_offset += len(e)
+            node_offset += 1  # Skip CLS token
+            all_entity_embs.extend(batch_entity_embs)
         
-        h_entity, t_entity = self.get_entity_representation(entity_embs, local_context, hts)
+        all_entity_embs = torch.stack(all_entity_embs, dim=0)  # [num_entities, max_mentions, hidden_size]
+        
+        # Get entity representations
+        h_entity, t_entity = self.get_entity_representation(all_entity_embs, local_context, hts)
 
         return h_entity, t_entity, rss
     
