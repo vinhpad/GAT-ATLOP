@@ -13,7 +13,7 @@ from prepro import read_docred
 from evaluation import to_official, official_evaluate
 import wandb
 from torch.cuda.amp import GradScaler
-
+from tqdm import tqdm
 def train(args, model, train_features, dev_features, test_features):
     def finetune(features, optimizer, num_epoch, num_steps):
         best_score = -1
@@ -28,7 +28,7 @@ def train(args, model, train_features, dev_features, test_features):
         scaler = GradScaler()
 
         for epoch in train_iterator:
-            for step, batch in enumerate(train_dataloader):
+            for step, batch in tqdm(enumerate(train_dataloader)):
                 model.zero_grad()
                 optimizer.zero_grad()
                 model.train()

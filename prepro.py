@@ -4,12 +4,6 @@ import dgl
 import torch
 import numpy as np
 
-from spacy.tokens import Doc
-import spacy
-import dgl.data
-
-nlp = spacy.load('en_core_web_sm')
-
 docred_rel2id = json.load(open('meta/rel2id.json', 'r'))
 
 def chunks(l, n):
@@ -159,13 +153,6 @@ def read_docred(file_in, tokenizer, max_seq_length=1024):
                 else:
                     train_triple[(label['h'], label['t'])].append(
                         {'relation': r, 'evidence': evidence})
-
-        mentions = set([m['name'] for e in entities for m in e])
-
-        potential_mention = get_anaphors(sample['sents'], mentions)
-
-        entities.append(potential_mention)
-
 
         entity_pos = []
         for e in entities:
