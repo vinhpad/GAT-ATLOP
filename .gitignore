@@ -1,5 +1,4 @@
-
-*.json
+dataset
 *.pyc
 wandb
 dataset

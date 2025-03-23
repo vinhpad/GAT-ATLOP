@@ -1,3 +1,5 @@
+from matplotlib.pyplot import cla
+from modal import forward
 import torch
 import torch.nn as nn
 from opt_einsum import contract
@@ -6,10 +8,6 @@ from long_seq import process_long_input
 from losses import ATLoss
 import torch.nn.functional as F
 import math
-
-# import dgl
-# import matplotlib.pyplot as plt
-# import networkx as nx
 
 class DocREModel(nn.Module):
     def __init__(self, config, model, emb_size=768, block_size=64, num_labels=-1):
@@ -22,22 +20,25 @@ class DocREModel(nn.Module):
         # Query and Key transformation matrices for attention
         self.W_q = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         self.W_k = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.relation_graph_extractor = nn.Linear(2 * config.hidden_size, config.hidden_size)
+        
 
-        self.head_extractor = nn.Linear(3 * config.hidden_size, emb_size)
-        self.tail_extractor = nn.Linear(3 * config.hidden_size, emb_size)
-        self.bilinear = nn.Linear(emb_size * block_size, config.num_labels)
 
+        self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
+        self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
+        self.bilinear1 = nn.Linear(emb_size * block_size, config.hidden_size)
         self.emb_size = emb_size
         self.block_size = block_size
         self.num_labels = num_labels
 
         self.gat = GAT(
             num_layers=2,
-            in_dim=768,
-            out_dim=768,
+            in_dim=config.hidden_size,
+            out_dim=config.hidden_size,
             num_head=8
         )
 
+        self.bilinear = FNN(config.hidden_size * 2, config.num_labels)
     def encode(self, input_ids, attention_mask):
         config = self.config
         if config.transformer_type == "bert":
@@ -206,15 +207,19 @@ class DocREModel(nn.Module):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
         hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
+        
         # GATv2 enhancement
-        h, t  = self.graph(sequence_output, graphs, attention, entity_pos, hts, rs)
+        hs_enhacement, ts_enhancement  = self.graph(sequence_output, graphs, attention, entity_pos, hts, rs)
+        graph_relation_info = self.relation_graph_extractor(torch.cat([hs_enhacement, ts_enhancement], dim=1))
 
-        hs = torch.tanh(self.head_extractor(torch.cat([hs, rs, h], dim=1)))
-        ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs, t], dim=1)))
+        hs = torch.tanh(self.head_extractor(torch.cat([hs_enhacement, rs], dim=1)))
+        ts = torch.tanh(self.tail_extractor(torch.cat([ts_enhancement, rs], dim=1)))
         b1 = hs.view(-1, self.emb_size // self.block_size, self.block_size)
-        b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)
-        bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.emb_size * self.block_size)
-        logits = self.bilinear(bl)
+        b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)        
+        bl = self.bilinear1((b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.emb_size * self.block_size))
+        
+
+        logits = self.bilinear(torch.cat([bl, graph_relation_info], dim=1))
 
         output = (self.loss_fnt.get_label(logits, num_labels=self.num_labels),)
         if labels is not None:
@@ -223,3 +228,18 @@ class DocREModel(nn.Module):
             loss = self.loss_fnt(logits.float(), labels.float())
             output = (loss.to(sequence_output),) + output
         return output
+
+class FNN(nn.Module):
+    def __init__(self, input_size, output_size):
+        super(FNN, self).__init__()
+        self.fc1 = nn.Linear(input_size, input_size // 2)
+        self.relu = nn.ReLU()
+        self.fc2 = nn.Linear(input_size // 2, output_size)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        x = self.sigmoid(x)
+        return x
