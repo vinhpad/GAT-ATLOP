@@ -19,15 +19,13 @@ class GAT(nn.Module):
         self.norms = nn.ModuleList()
         self.dropout = nn.Dropout(dropout)
 
-        for _ in range(num_layers - 1):
+        for _ in range(num_layers):
             self.gat_layers.append(
-                GATv2Conv(in_dim, in_dim//num_head, num_head, activation=nn.GELU())
+                GATv2Conv(in_dim, in_dim//num_head, num_head, activation=nn.ELU())
             )
-            self.norms.append(nn.LayerNorm(in_dim))
         
-        self.out_layer = GATv2Conv(in_dim, out_dim, 1, activation=nn.GELU())
         self.out_norm = nn.LayerNorm(out_dim)
-
+        
         # Initialize parameters
         self._initialize_parameters()
 
@@ -44,14 +42,13 @@ class GAT(nn.Module):
     def forward(self, input, graph):
         h = input
 
-        for layer, norm in zip(self.gat_layers, self.norms):
+        for layer in zip(self.gat_layers, self.norms):
             h_new = layer(graph, h).flatten(1)
             h_new = h_new + h  # Residual connection
-            h_new = norm(h_new)
+            h_new = self.norm(h_new)
             h_new = self.dropout(h_new)
             h = h_new
-
-        logits = self.out_layer(graph, h).squeeze(1)
+        
         logits = self.out_norm(logits)
         
         return logits

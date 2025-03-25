@@ -13,41 +13,6 @@ def chunks(l, n):
         res += [l[i:i + n]]
     return res
 
-def get_anaphors(sents, mentions):
-    potential_mentions = []
-
-    for sent_id, sent in enumerate(sents):
-        doc_spacy = Doc(nlp.vocab, words=sent)
-        for name, tool in nlp.pipeline:
-            if name != 'ner':
-                tool(doc_spacy)
-
-        for token in doc_spacy:
-            potential_mention = ''
-            if token.dep_ == 'det' and token.text.lower() == 'the':
-                potential_name = doc_spacy.text[token.idx:token.head.idx + len(token.head.text)]
-                pos_start, pos_end = token.i, token.i + len(potential_name.split(' '))
-                potential_mention = {
-                    'pos': [pos_start, pos_end],
-                    'type': 'MISC',
-                    'sent_id': sent_id,
-                    'name': potential_name
-                }
-            if token.pos_ == 'PRON':
-                potential_name = token.text
-                pos_start = sent.index(token.text)
-                potential_mention = {
-                    'pos': [pos_start, pos_start + 1],
-                    'type': 'MISC',
-                    'sent_id': sent_id,
-                    'name': potential_name
-                }
-
-            if potential_mention:
-                if not any(mention in potential_mention['name'] for mention in mentions):
-                    potential_mentions.append(potential_mention)
-    return potential_mentions
-
 def build_graph(entity_pos, sent_pos):
     u = []
     v = []
@@ -85,12 +50,12 @@ def build_graph(entity_pos, sent_pos):
                 continue
             for mention_id1, _ in enumerate(entity_pos[entity_idx1]):
                 for mention_id2, _ in enumerate(entity_pos[entity_idx2]):
-                    for sent in sent_pos:
+                    # for sent in sent_pos:
                         # if sent_id == entity_pos[entity_idx1][mention_id1][0] and sent_id == entity_pos[entity_idx2][mention_id2][0]:
-                        if sent[0] <= entity_pos[entity_idx1][mention_id1][0] \
-                            and sent[1] >= entity_pos[entity_idx1][mention_id1][1] \
-                                and sent[0] <= entity_pos[entity_idx2][mention_id2][0] \
-                                    and sent[1] >= entity_pos[entity_idx2][mention_id2][1]:
+                        # if sent[0] <= entity_pos[entity_idx1][mention_id1][0] \
+                        #     and sent[1] >= entity_pos[entity_idx1][mention_id1][1] \
+                        #         and sent[0] <= entity_pos[entity_idx2][mention_id2][0] \
+                        #             and sent[1] >= entity_pos[entity_idx2][mention_id2][1]:
                             u.append(mention_idx_offset[entity_idx1][mention_id1])
                             v.append(mention_idx_offset[entity_idx2][mention_id2])
     

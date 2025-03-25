@@ -1,5 +1,3 @@
-from matplotlib.pyplot import cla
-from modal import forward
 import torch
 import torch.nn as nn
 from opt_einsum import contract
@@ -8,7 +6,7 @@ from long_seq import process_long_input
 from losses import ATLoss
 import torch.nn.functional as F
 import math
-
+import pickle
 class DocREModel(nn.Module):
     def __init__(self, config, model, emb_size=768, block_size=64, num_labels=-1):
         super().__init__()
@@ -20,9 +18,8 @@ class DocREModel(nn.Module):
         # Query and Key transformation matrices for attention
         self.W_q = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         self.W_k = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        self.relation_graph_extractor = nn.Linear(2 * config.hidden_size, config.hidden_size)
-        
-
+        self.linear1 = nn.Linear(2 * config.hidden_size, config.num_labels)
+        self.linear2 = nn.Linear(2 * config.num_labels, config.num_labels)
 
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
@@ -38,7 +35,10 @@ class DocREModel(nn.Module):
             num_head=8
         )
 
-        self.bilinear = FNN(config.hidden_size * 2, config.num_labels)
+        self.bilinear = nn.Linear(config.num_labels * 3, config.num_labels)
+        self.label_embedding = pickle.load(open("data/label_embedding.pkl", "rb"))
+        self.label_embedding = torch.tensor(self.label_embedding).float()
+        
     def encode(self, input_ids, attention_mask):
         config = self.config
         if config.transformer_type == "bert":
@@ -152,7 +152,7 @@ class DocREModel(nn.Module):
 
         num_node = graphs.num_nodes()
         features = torch.zeros(num_node, self.config.hidden_size, device=sequence_output.device)
-
+        features[num_node - 97: num_node, :] = self.label_embedding
         # Get features for graph nodes
         node_offset = 0
         for i in range(batch_size):
@@ -166,6 +166,7 @@ class DocREModel(nn.Module):
             
             features[node_offset, :] = sequence_output[i, 0]
             node_offset = node_offset + 1
+        label_embedding = features[node_offset : node_offset + self.config.num_labels, :] 
 
         # Apply GAT
         features = self.gat(features, graphs.to(sequence_output.device))
@@ -194,7 +195,8 @@ class DocREModel(nn.Module):
         # Get entity representations
         h_entity, t_entity = self.get_entity_representation(all_entity_embs, local_context, hts)
 
-        return h_entity, t_entity
+
+        return h_entity, t_entity, label_embedding
     
     def forward(self,
                 input_ids=None,
@@ -209,8 +211,11 @@ class DocREModel(nn.Module):
         hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
         
         # GATv2 enhancement
-        hs_enhacement, ts_enhancement  = self.graph(sequence_output, graphs, attention, entity_pos, hts, rs)
-        graph_relation_info = self.relation_graph_extractor(torch.cat([hs_enhacement, ts_enhancement], dim=1))
+        hs_enhacement, ts_enhancement, label_embedding  = self.graph(sequence_output, graphs, attention, entity_pos, hts, rs)
+        graph_relation_info = self.linner1(torch.cat([hs_enhacement, ts_enhancement], dim=1))
+        hs_with_labelinfo = torch.matmul(hs, label_embedding.transpose(0, 1))
+        ts_with_labelinfo = torch.matmul(ts, label_embedding.transpose(0, 1))
+        logits_with_labelinfo = self.linear2(torch.cat((hs_with_labelinfo, ts_with_labelinfo), dim=1))
 
         hs = torch.tanh(self.head_extractor(torch.cat([hs_enhacement, rs], dim=1)))
         ts = torch.tanh(self.tail_extractor(torch.cat([ts_enhancement, rs], dim=1)))
@@ -219,7 +224,7 @@ class DocREModel(nn.Module):
         bl = self.bilinear1((b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.emb_size * self.block_size))
         
 
-        logits = self.bilinear(torch.cat([bl, graph_relation_info], dim=1))
+        logits = self.bilinear(torch.cat([bl, graph_relation_info, logits_with_labelinfo], dim=1))
 
         output = (self.loss_fnt.get_label(logits, num_labels=self.num_labels),)
         if labels is not None:
