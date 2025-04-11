@@ -3,3 +3,4 @@ wandb
 opt_einsum
 transformers
 dgl -f https://data.dgl.ai/wheels/torch-2.4/cu124/repo.html
+spacy>=3.0.0

@@ -1,11 +1,17 @@
-from tqdm import tqdm
 import ujson as json
 import dgl
 import torch
 import numpy as np
 
-docred_rel2id = json.load(open('meta/rel2id.json', 'r'))
+from tqdm import tqdm
 
+docred_rel2id = json.load(open('meta/rel2id.json', 'r'))
+docred_ent2id = {'NA': 0, 'ORG': 1, 'LOC': 2, 'NUM': 3, 'TIME': 4, 'MISC': 5, 'PER': 6}
+
+from spacy.tokens import Doc
+import spacy
+
+nlp = spacy.load('en_core_web_sm')
 
 def chunks(l, n):
     res = []
@@ -14,8 +20,43 @@ def chunks(l, n):
         res += [l[i:i + n]]
     return res
 
+def get_anaphors(sents, mentions):
+    potential_mentions = []
 
-def build_graph(entity_pos, sent_pos):
+    for sent_id, sent in enumerate(sents):
+        doc_spacy = Doc(nlp.vocab, words=sent)
+        for name, tool in nlp.pipeline:
+            if name != 'ner':
+                tool(doc_spacy)
+
+        for token in doc_spacy:
+            potential_mention = ''
+            if token.dep_ == 'det' and token.text.lower() == 'the':
+                potential_name = doc_spacy.text[token.idx:token.head.idx + len(token.head.text)]
+                pos_start, pos_end = token.i, token.i + len(potential_name.split(' '))
+                potential_mention = {
+                    'pos': [pos_start, pos_end],
+                    'type': 'MISC',
+                    'sent_id': sent_id,
+                    'name': potential_name
+                }
+            if token.pos_ == 'PRON':
+                potential_name = token.text
+                pos_start = sent.index(token.text)
+                potential_mention = {
+                    'pos': [pos_start, pos_start + 1],
+                    'type': 'MISC',
+                    'sent_id': sent_id,
+                    'name': potential_name
+                }
+
+            if potential_mention:
+                if not any(mention in potential_mention['name'] for mention in mentions):
+                    potential_mentions.append(potential_mention)
+
+    return potential_mentions
+
+def build_graph(entity_pos, sent_pos, sents=None, entities=None):
     u = []
     v = []
     edge_weights = []  # Add edge weights
@@ -78,13 +119,69 @@ def build_graph(entity_pos, sent_pos):
                         weight = 1.0 if sent1 == sent2 else 0.5
                         edge_weights.append(weight)
 
+    # 4. Add anaphors nodes and edges if sents and entities are provided
+    anaphor_idx = document_idx + 1
+    if sents is not None and entities is not None:
+        # Get all entity names for filtering
+        all_mentions = []
+        for entity in entities:
+            for mention in entity:
+                all_mentions.append(mention.get('name', ''))
+        
+        # Get anaphors
+        anaphors = get_anaphors(sents, all_mentions)
+        
+        # Add anaphor nodes and connect them to potential antecedents
+        for anaphor in anaphors:
+            anaphor_sent_id = anaphor['sent_id']
+            anaphor_pos = anaphor['pos']
+            
+            # Find the sentence position for this anaphor
+            anaphor_sent_pos = None
+            for i, (start, end) in enumerate(sent_pos):
+                if i == anaphor_sent_id:
+                    anaphor_sent_pos = (start + anaphor_pos[0], start + anaphor_pos[1])
+                    break
+            
+            if anaphor_sent_pos:
+                # Connect anaphor to document node
+                u.append(document_idx)
+                v.append(anaphor_idx)
+                edge_weights.append(0.3)  # Lower weight for anaphors
+                
+                v.append(document_idx)
+                u.append(anaphor_idx)
+                edge_weights.append(0.3)
+                
+                # Connect anaphor to potential antecedents in previous sentences
+                for entity_idx, entity in enumerate(entities):
+                    for mention_idx, mention in enumerate(entity):
+                        if mention['sent_id'] < anaphor_sent_id:  # Only connect to mentions in previous sentences
+                            # Add edge from anaphor to potential antecedent
+                            u.append(anaphor_idx)
+                            v.append(mention_idx_offset[entity_idx][mention_idx])
+                            
+                            # Weight based on sentence distance and entity type compatibility
+                            sent_distance = anaphor_sent_id - mention['sent_id']
+                            weight = 0.7 / (1 + sent_distance)  # Decay with distance
+                            
+                            # Adjust weight based on entity type compatibility with pronoun
+                            if anaphor['name'].lower() in ['he', 'she', 'his', 'her'] and mention.get('type') == 'PER':
+                                weight *= 1.5  # Boost for personal pronouns matching person entities
+                            elif anaphor['name'].lower() in ['it', 'its'] and mention.get('type') in ['ORG', 'LOC', 'MISC']:
+                                weight *= 1.3  # Boost for it/its matching non-person entities
+                            
+                            edge_weights.append(weight)
+                
+                anaphor_idx += 1
+
     # Create graph with edge weights
     for edge_id in range(len(u)):
         assert u[edge_id] != v[
             edge_id], f"Exist self edge {u[edge_id]} to {v[edge_id]}"
 
     graph = dgl.graph((torch.tensor(u), torch.tensor(v)),
-                      num_nodes=document_idx + 1)
+                      num_nodes=max(anaphor_idx, document_idx + 1))
     graph.edata['weight'] = torch.tensor(edge_weights, dtype=torch.float)
     graph = dgl.add_self_loop(graph)
 
@@ -195,7 +292,8 @@ def read_docred(file_in, tokenizer, max_seq_length=1024):
         input_ids = tokenizer.convert_tokens_to_ids(sents)
         input_ids = tokenizer.build_inputs_with_special_tokens(input_ids)
 
-        graph = build_graph(entity_pos, sent_pos)
+        # Pass original sentences and entities to build_graph
+        graph = build_graph(entity_pos, sent_pos, sample['sents'], entities)
         i_line += 1
         feature = {
             'input_ids': input_ids,

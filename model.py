@@ -40,10 +40,16 @@ class DocREModel(nn.Module):
         self.block_size = block_size
         self.num_labels = num_labels
 
-        self.gat = GAT(num_layers=2,
-                       in_dim=config.hidden_size,
-                       out_dim=config.hidden_size,
-                       num_head=8)
+        # Cập nhật lớp GAT với các tham số tối ưu cho đồ thị phức tạp
+        self.gat = GAT(
+            num_layers=3,  # Tăng số lượng layer
+            in_dim=config.hidden_size,
+            out_dim=config.hidden_size,
+            num_head=8,
+            dropout=0.1,
+            use_edge_weights=True,  # Sử dụng trọng số cạnh
+            residual=True  # Sử dụng kết nối dư
+        )
 
         self.bilinear = nn.Linear(config.num_labels * 3, config.num_labels)
         self.label_embedding = pickle.load(
