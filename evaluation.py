@@ -22,20 +22,19 @@ def to_official(preds, features):
         pred = np.nonzero(pred)[0].tolist()
         for p in pred:
             if p != 0:
-                res.append(
-                    {
-                        'title': title[i],
-                        'h_idx': h_idx[i],
-                        't_idx': t_idx[i],
-                        'r': id2rel[p],
-                    }
-                )
+                res.append({
+                    'title': title[i],
+                    'h_idx': h_idx[i],
+                    't_idx': t_idx[i],
+                    'r': id2rel[p],
+                })
     return res
 
 
 def gen_train_facts(data_file_name, truth_dir):
     fact_file_name = data_file_name[data_file_name.find("train_"):]
-    fact_file_name = os.path.join(truth_dir, fact_file_name.replace(".json", ".fact"))
+    fact_file_name = os.path.join(truth_dir,
+                                  fact_file_name.replace(".json", ".fact"))
 
     if os.path.exists(fact_file_name):
         fact_in_train = set([])
@@ -68,8 +67,10 @@ def official_evaluate(tmp, path):
     if not os.path.exists(truth_dir):
         os.makedirs(truth_dir)
 
-    fact_in_train_annotated = gen_train_facts(os.path.join(path, "train_annotated.json"), truth_dir)
-    fact_in_train_distant = gen_train_facts(os.path.join(path, "train_distant.json"), truth_dir)
+    fact_in_train_annotated = gen_train_facts(
+        os.path.join(path, "train_annotated.json"), truth_dir)
+    fact_in_train_distant = gen_train_facts(
+        os.path.join(path, "train_distant.json"), truth_dir)
 
     truth = json.load(open(os.path.join(path, "dev.json")))
 
@@ -99,7 +100,8 @@ def official_evaluate(tmp, path):
     for i in range(1, len(tmp)):
         x = tmp[i]
         y = tmp[i - 1]
-        if (x['title'], x['h_idx'], x['t_idx'], x['r']) != (y['title'], y['h_idx'], y['t_idx'], y['r']):
+        if (x['title'], x['h_idx'], x['t_idx'],
+                x['r']) != (y['title'], y['h_idx'], y['t_idx'], y['r']):
             submission_answer.append(tmp[i])
 
     correct_re = 0
@@ -156,17 +158,22 @@ def official_evaluate(tmp, path):
     else:
         evi_f1 = 2.0 * evi_p * evi_r / (evi_p + evi_r)
 
-    re_p_ignore_train_annotated = 1.0 * (correct_re - correct_in_train_annotated) / (len(submission_answer) - correct_in_train_annotated + 1e-5)
-    re_p_ignore_train = 1.0 * (correct_re - correct_in_train_distant) / (len(submission_answer) - correct_in_train_distant + 1e-5)
+    re_p_ignore_train_annotated = 1.0 * (
+        correct_re - correct_in_train_annotated) / (
+            len(submission_answer) - correct_in_train_annotated + 1e-5)
+    re_p_ignore_train = 1.0 * (correct_re - correct_in_train_distant) / (
+        len(submission_answer) - correct_in_train_distant + 1e-5)
 
     if re_p_ignore_train_annotated + re_r == 0:
         re_f1_ignore_train_annotated = 0
     else:
-        re_f1_ignore_train_annotated = 2.0 * re_p_ignore_train_annotated * re_r / (re_p_ignore_train_annotated + re_r)
+        re_f1_ignore_train_annotated = 2.0 * re_p_ignore_train_annotated * re_r / (
+            re_p_ignore_train_annotated + re_r)
 
     if re_p_ignore_train + re_r == 0:
         re_f1_ignore_train = 0
     else:
-        re_f1_ignore_train = 2.0 * re_p_ignore_train * re_r / (re_p_ignore_train + re_r)
+        re_f1_ignore_train = 2.0 * re_p_ignore_train * re_r / (
+            re_p_ignore_train + re_r)
 
     return re_f1, evi_f1, re_f1_ignore_train_annotated, re_f1_ignore_train

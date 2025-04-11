@@ -14,14 +14,26 @@ from evaluation import to_official, official_evaluate
 import wandb
 from torch.cuda.amp import GradScaler
 from tqdm import tqdm
+
+
 def train(args, model, train_features, dev_features, test_features):
+
     def finetune(features, optimizer, num_epoch, num_steps):
         best_score = -1
-        train_dataloader = DataLoader(features, batch_size=args.train_batch_size, shuffle=True, collate_fn=collate_fn, drop_last=True)
+        train_dataloader = DataLoader(features,
+                                      batch_size=args.train_batch_size,
+                                      shuffle=True,
+                                      collate_fn=collate_fn,
+                                      drop_last=True)
         train_iterator = range(int(num_epoch))
-        total_steps = int(len(train_dataloader) * num_epoch // args.gradient_accumulation_steps)
+        total_steps = int(
+            len(train_dataloader) * num_epoch //
+            args.gradient_accumulation_steps)
         warmup_steps = int(total_steps * args.warmup_ratio)
-        scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=warmup_steps, num_training_steps=total_steps)
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=warmup_steps,
+            num_training_steps=total_steps)
         print("Total steps: {}".format(total_steps))
         print("Warmup steps: {}".format(warmup_steps))
 
@@ -49,7 +61,8 @@ def train(args, model, train_features, dev_features, test_features):
                 if step % args.gradient_accumulation_steps == 0:
                     if args.max_grad_norm > 0:
                         scaler.unscale_(optimizer)
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                        torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                       args.max_grad_norm)
                     scaler.step(optimizer)
                     scaler.update()
                     scheduler.step()
@@ -57,8 +70,14 @@ def train(args, model, train_features, dev_features, test_features):
                     num_steps += 1
 
                 wandb.log({"loss": loss.item()}, step=num_steps)
-                if (step + 1) == len(train_dataloader) - 1 or (args.evaluation_steps > 0 and num_steps % args.evaluation_steps == 0 and step % args.gradient_accumulation_steps == 0):
-                    dev_score, dev_output = evaluate(args, model, dev_features, tag="dev")
+                if (step + 1) == len(train_dataloader) - 1 or (
+                        args.evaluation_steps > 0
+                        and num_steps % args.evaluation_steps == 0
+                        and step % args.gradient_accumulation_steps == 0):
+                    dev_score, dev_output = evaluate(args,
+                                                     model,
+                                                     dev_features,
+                                                     tag="dev")
                     wandb.log(dev_output, step=num_steps)
                     print(dev_output)
                     if dev_score > best_score:
@@ -72,15 +91,25 @@ def train(args, model, train_features, dev_features, test_features):
 
     new_layer = ["extractor", "bilinear", 'gat']
     optimizer_grouped_parameters = [
-        {"params": [p for n, p in model.named_parameters() if not any(nd in n for nd in new_layer)], },
-        {"params": [p for n, p in model.named_parameters() if any(nd in n for nd in new_layer)], "lr": 1e-4},
+        {
+            "params": [
+                p for n, p in model.named_parameters()
+                if not any(nd in n for nd in new_layer)
+            ],
+        },
+        {
+            "params": [
+                p for n, p in model.named_parameters()
+                if any(nd in n for nd in new_layer)
+            ],
+            "lr":
+            1e-4
+        },
     ]
 
-    optimizer = AdamW(
-        optimizer_grouped_parameters, 
-        lr=args.learning_rate, 
-        eps=args.adam_epsilon
-    )
+    optimizer = AdamW(optimizer_grouped_parameters,
+                      lr=args.learning_rate,
+                      eps=args.adam_epsilon)
     num_steps = 0
     set_seed(args)
     model.zero_grad()
@@ -89,7 +118,11 @@ def train(args, model, train_features, dev_features, test_features):
 
 def evaluate(args, model, features, tag="dev"):
 
-    dataloader = DataLoader(features, batch_size=args.test_batch_size, shuffle=False, collate_fn=collate_fn, drop_last=False)
+    dataloader = DataLoader(features,
+                            batch_size=args.test_batch_size,
+                            shuffle=False,
+                            collate_fn=collate_fn,
+                            drop_last=False)
     preds = []
     for batch in dataloader:
         model.eval()
@@ -121,7 +154,11 @@ def evaluate(args, model, features, tag="dev"):
 
 def report(args, model, features):
 
-    dataloader = DataLoader(features, batch_size=args.test_batch_size, shuffle=False, collate_fn=collate_fn, drop_last=False)
+    dataloader = DataLoader(features,
+                            batch_size=args.test_batch_size,
+                            shuffle=False,
+                            collate_fn=collate_fn,
+                            drop_last=False)
     preds = []
     for batch in dataloader:
         model.eval()
@@ -144,50 +181,92 @@ def report(args, model, features):
     preds = to_official(preds, features)
     return preds
 
+
 def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--data_dir", default="./dataset/docred", type=str)
     parser.add_argument("--transformer_type", default="bert", type=str)
-    parser.add_argument("--model_name_or_path", default="bert-base-cased", type=str)
+    parser.add_argument("--model_name_or_path",
+                        default="bert-base-cased",
+                        type=str)
 
-    parser.add_argument("--train_file", default="train_annotated.json", type=str)
+    parser.add_argument("--train_file",
+                        default="train_annotated.json",
+                        type=str)
     parser.add_argument("--dev_file", default="dev.json", type=str)
     parser.add_argument("--test_file", default="test.json", type=str)
     parser.add_argument("--save_path", default="", type=str)
     parser.add_argument("--load_path", default="", type=str)
 
-    parser.add_argument("--config_name", default="", type=str,
-                        help="Pretrained config name or path if not the same as model_name")
-    parser.add_argument("--tokenizer_name", default="", type=str,
-                        help="Pretrained tokenizer name or path if not the same as model_name")
-    parser.add_argument("--max_seq_length", default=1024, type=int,
-                        help="The maximum total input sequence length after tokenization. Sequences longer "
-                             "than this will be truncated, sequences shorter will be padded.")
+    parser.add_argument(
+        "--config_name",
+        default="",
+        type=str,
+        help="Pretrained config name or path if not the same as model_name")
+    parser.add_argument(
+        "--tokenizer_name",
+        default="",
+        type=str,
+        help="Pretrained tokenizer name or path if not the same as model_name")
+    parser.add_argument(
+        "--max_seq_length",
+        default=1024,
+        type=int,
+        help=
+        "The maximum total input sequence length after tokenization. Sequences longer "
+        "than this will be truncated, sequences shorter will be padded.")
 
-    parser.add_argument("--train_batch_size", default=4, type=int,
+    parser.add_argument("--train_batch_size",
+                        default=4,
+                        type=int,
                         help="Batch size for training.")
-    parser.add_argument("--test_batch_size", default=8, type=int,
+    parser.add_argument("--test_batch_size",
+                        default=8,
+                        type=int,
                         help="Batch size for testing.")
-    parser.add_argument("--gradient_accumulation_steps", default=1, type=int,
-                        help="Number of updates steps to accumulate before performing a backward/update pass.")
-    parser.add_argument("--num_labels", default=4, type=int,
+    parser.add_argument(
+        "--gradient_accumulation_steps",
+        default=1,
+        type=int,
+        help=
+        "Number of updates steps to accumulate before performing a backward/update pass."
+    )
+    parser.add_argument("--num_labels",
+                        default=4,
+                        type=int,
                         help="Max number of labels in prediction.")
-    parser.add_argument("--learning_rate", default=5e-5, type=float,
+    parser.add_argument("--learning_rate",
+                        default=5e-5,
+                        type=float,
                         help="The initial learning rate for Adam.")
-    parser.add_argument("--adam_epsilon", default=1e-6, type=float,
+    parser.add_argument("--adam_epsilon",
+                        default=1e-6,
+                        type=float,
                         help="Epsilon for Adam optimizer.")
-    parser.add_argument("--max_grad_norm", default=1.0, type=float,
+    parser.add_argument("--max_grad_norm",
+                        default=1.0,
+                        type=float,
                         help="Max gradient norm.")
-    parser.add_argument("--warmup_ratio", default=0.06, type=float,
+    parser.add_argument("--warmup_ratio",
+                        default=0.06,
+                        type=float,
                         help="Warm up ratio for Adam.")
-    parser.add_argument("--num_train_epochs", default=30.0, type=float,
+    parser.add_argument("--num_train_epochs",
+                        default=30.0,
+                        type=float,
                         help="Total number of training epochs to perform.")
-    parser.add_argument("--evaluation_steps", default=-1, type=int,
+    parser.add_argument("--evaluation_steps",
+                        default=-1,
+                        type=int,
                         help="Number of training steps between evaluations.")
-    parser.add_argument("--seed", type=int, default=66,
+    parser.add_argument("--seed",
+                        type=int,
+                        default=66,
                         help="random seed for initialization")
-    parser.add_argument("--num_class", type=int, default=97,
+    parser.add_argument("--num_class",
+                        type=int,
+                        default=97,
                         help="Number of relation types in dataset.")
 
     args = parser.parse_args()
@@ -202,17 +281,23 @@ def main():
         num_labels=args.num_class,
     )
     tokenizer = AutoTokenizer.from_pretrained(
-        args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,
-    )
+        args.tokenizer_name
+        if args.tokenizer_name else args.model_name_or_path, )
 
     read = read_docred
 
     train_file = os.path.join(args.data_dir, args.train_file)
     dev_file = os.path.join(args.data_dir, args.dev_file)
     test_file = os.path.join(args.data_dir, args.test_file)
-    train_features = read(train_file, tokenizer, max_seq_length=args.max_seq_length)
-    dev_features = read(dev_file, tokenizer, max_seq_length=args.max_seq_length)
-    test_features = read(test_file, tokenizer, max_seq_length=args.max_seq_length)
+    train_features = read(train_file,
+                          tokenizer,
+                          max_seq_length=args.max_seq_length)
+    dev_features = read(dev_file,
+                        tokenizer,
+                        max_seq_length=args.max_seq_length)
+    test_features = read(test_file,
+                         tokenizer,
+                         max_seq_length=args.max_seq_length)
 
     model = AutoModel.from_pretrained(
         args.model_name_or_path,
@@ -240,5 +325,5 @@ def main():
 
 
 if __name__ == "__main__":
-    
+
     main()

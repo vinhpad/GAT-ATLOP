@@ -3,7 +3,8 @@ import torch.nn.functional as F
 import numpy as np
 
 
-def process_long_input(model, input_ids, attention_mask, start_tokens, end_tokens):
+def process_long_input(model, input_ids, attention_mask, start_tokens,
+                       end_tokens):
     # Split the input to 2 overlapping chunks. Now BERT can encode inputs of which the length are up to 1024.
     n, c = input_ids.size()
     start_tokens = torch.tensor(start_tokens).to(input_ids)
@@ -27,10 +28,13 @@ def process_long_input(model, input_ids, attention_mask, start_tokens, end_token
                 new_attention_mask.append(attention_mask[i, :512])
                 num_seg.append(1)
             else:
-                input_ids1 = torch.cat([input_ids[i, :512 - len_end], end_tokens], dim=-1)
-                input_ids2 = torch.cat([start_tokens, input_ids[i, (l_i - 512 + len_start): l_i]], dim=-1)
+                input_ids1 = torch.cat(
+                    [input_ids[i, :512 - len_end], end_tokens], dim=-1)
+                input_ids2 = torch.cat(
+                    [start_tokens, input_ids[i, (l_i - 512 + len_start):l_i]],
+                    dim=-1)
                 attention_mask1 = attention_mask[i, :512]
-                attention_mask2 = attention_mask[i, (l_i - 512): l_i]
+                attention_mask2 = attention_mask[i, (l_i - 512):l_i]
                 new_input_ids.extend([input_ids1, input_ids2])
                 new_attention_mask.extend([attention_mask1, attention_mask2])
                 num_seg.append(2)
@@ -57,14 +61,19 @@ def process_long_input(model, input_ids, attention_mask, start_tokens, end_token
                 att1 = attention[i][:, :512 - len_end, :512 - len_end]
                 output1 = F.pad(output1, (0, 0, 0, c - 512 + len_end))
                 mask1 = F.pad(mask1, (0, c - 512 + len_end))
-                att1 = F.pad(att1, (0, c - 512 + len_end, 0, c - 512 + len_end))
+                att1 = F.pad(att1,
+                             (0, c - 512 + len_end, 0, c - 512 + len_end))
 
                 output2 = sequence_output[i + 1][len_start:]
                 mask2 = attention_mask[i + 1][len_start:]
                 att2 = attention[i + 1][:, len_start:, len_start:]
-                output2 = F.pad(output2, (0, 0, l_i - 512 + len_start, c - l_i))
+                output2 = F.pad(output2,
+                                (0, 0, l_i - 512 + len_start, c - l_i))
                 mask2 = F.pad(mask2, (l_i - 512 + len_start, c - l_i))
-                att2 = F.pad(att2, [l_i - 512 + len_start, c - l_i, l_i - 512 + len_start, c - l_i])
+                att2 = F.pad(att2, [
+                    l_i - 512 + len_start, c - l_i, l_i - 512 + len_start,
+                    c - l_i
+                ])
                 mask = mask1 + mask2 + 1e-10
                 output = (output1 + output2) / mask.unsqueeze(-1)
                 att = (att1 + att2)
