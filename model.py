@@ -34,7 +34,7 @@ class DocREModel(nn.Module):
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.bilinear = nn.Linear(emb_size * block_size, config.num_labels)
         
-        
+        self.bilinear_graph_integration = nn.Linear(config.num_labels * 2, config.num_labels)
         
         self.emb_size = emb_size
         self.block_size = block_size
@@ -258,7 +258,8 @@ class DocREModel(nn.Module):
             -1, self.emb_size * self.block_size))
 
         # Combine bilinear scores with entity scores
-        logits = bl + entity_scores  # Add entity scores to the final logits
+        logits = self.bilinear_graph_integration(torch.cat([bl, entity_scores], dim=1))  
+        # Add entity scores to the final logits
         
         output = (self.loss_fnt.get_label(logits,
                                           num_labels=self.num_labels), )
