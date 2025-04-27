@@ -6,12 +6,21 @@ import numpy as np
 from tqdm import tqdm
 
 docred_rel2id = json.load(open('meta/rel2id.json', 'r'))
-docred_ent2id = {'NA': 0, 'ORG': 1, 'LOC': 2, 'NUM': 3, 'TIME': 4, 'MISC': 5, 'PER': 6}
+docred_ent2id = {
+    'NA': 0,
+    'ORG': 1,
+    'LOC': 2,
+    'NUM': 3,
+    'TIME': 4,
+    'MISC': 5,
+    'PER': 6
+}
 
 from spacy.tokens import Doc
 import spacy
 
 nlp = spacy.load('en_core_web_sm')
+
 
 def chunks(l, n):
     res = []
@@ -19,6 +28,7 @@ def chunks(l, n):
         assert len(l[i:i + n]) == n
         res += [l[i:i + n]]
     return res
+
 
 def get_anaphors(sents, mentions):
     potential_mentions = []
@@ -32,8 +42,10 @@ def get_anaphors(sents, mentions):
         for token in doc_spacy:
             potential_mention = ''
             if token.dep_ == 'det' and token.text.lower() == 'the':
-                potential_name = doc_spacy.text[token.idx:token.head.idx + len(token.head.text)]
-                pos_start, pos_end = token.i, token.i + len(potential_name.split(' '))
+                potential_name = doc_spacy.text[token.idx:token.head.idx +
+                                                len(token.head.text)]
+                pos_start, pos_end = token.i, token.i + len(
+                    potential_name.split(' '))
                 potential_mention = {
                     'pos': [pos_start, pos_end],
                     'type': 'MISC',
@@ -51,10 +63,12 @@ def get_anaphors(sents, mentions):
                 }
 
             if potential_mention:
-                if not any(mention in potential_mention['name'] for mention in mentions):
+                if not any(mention in potential_mention['name']
+                           for mention in mentions):
                     potential_mentions.append(potential_mention)
 
     return potential_mentions
+
 
 def build_graph(entity_pos, sent_pos, sents=None, entities=None):
     u = []
@@ -127,52 +141,62 @@ def build_graph(entity_pos, sent_pos, sents=None, entities=None):
         for entity in entities:
             for mention in entity:
                 all_mentions.append(mention.get('name', ''))
-        
+
         # Get anaphors
         anaphors = get_anaphors(sents, all_mentions)
-        
+
         # Add anaphor nodes and connect them to potential antecedents
         for anaphor in anaphors:
             anaphor_sent_id = anaphor['sent_id']
             anaphor_pos = anaphor['pos']
-            
+
             # Find the sentence position for this anaphor
             anaphor_sent_pos = None
             for i, (start, end) in enumerate(sent_pos):
                 if i == anaphor_sent_id:
-                    anaphor_sent_pos = (start + anaphor_pos[0], start + anaphor_pos[1])
+                    anaphor_sent_pos = (start + anaphor_pos[0],
+                                        start + anaphor_pos[1])
                     break
-            
+
             if anaphor_sent_pos:
                 # Connect anaphor to document node
                 u.append(document_idx)
                 v.append(anaphor_idx)
                 edge_weights.append(0.3)  # Lower weight for anaphors
-                
+
                 v.append(document_idx)
                 u.append(anaphor_idx)
                 edge_weights.append(0.3)
-                
+
                 # Connect anaphor to potential antecedents in previous sentences
                 for entity_idx, entity in enumerate(entities):
                     for mention_idx, mention in enumerate(entity):
-                        if mention['sent_id'] < anaphor_sent_id:  # Only connect to mentions in previous sentences
+                        if mention[
+                                'sent_id'] < anaphor_sent_id:  # Only connect to mentions in previous sentences
                             # Add edge from anaphor to potential antecedent
                             u.append(anaphor_idx)
-                            v.append(mention_idx_offset[entity_idx][mention_idx])
-                            
+                            v.append(
+                                mention_idx_offset[entity_idx][mention_idx])
+
                             # Weight based on sentence distance and entity type compatibility
                             sent_distance = anaphor_sent_id - mention['sent_id']
-                            weight = 0.7 / (1 + sent_distance)  # Decay with distance
-                            
+                            weight = 0.7 / (1 + sent_distance
+                                            )  # Decay with distance
+
                             # Adjust weight based on entity type compatibility with pronoun
-                            if anaphor['name'].lower() in ['he', 'she', 'his', 'her'] and mention.get('type') == 'PER':
+                            if anaphor['name'].lower() in [
+                                    'he', 'she', 'his', 'her'
+                            ] and mention.get('type') == 'PER':
                                 weight *= 1.5  # Boost for personal pronouns matching person entities
-                            elif anaphor['name'].lower() in ['it', 'its'] and mention.get('type') in ['ORG', 'LOC', 'MISC']:
+                            elif anaphor['name'].lower() in [
+                                    'it', 'its'
+                            ] and mention.get('type') in [
+                                    'ORG', 'LOC', 'MISC'
+                            ]:
                                 weight *= 1.3  # Boost for it/its matching non-person entities
-                            
+
                             edge_weights.append(weight)
-                
+
                 anaphor_idx += 1
 
     # Create graph with edge weights

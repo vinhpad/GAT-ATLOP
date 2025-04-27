@@ -25,21 +25,21 @@ class GAT(nn.Module):
 
         hidden_dims = [in_dim]
         for i in range(num_layers):
-            hidden_dim = in_dim // (2 ** i) if i > 0 else in_dim
+            hidden_dim = in_dim // (2**i) if i > 0 else in_dim
             hidden_dims.append(hidden_dim)
-            
+
             self.gat_layers.append(
-                GATv2Conv(hidden_dims[i], 
+                GATv2Conv(hidden_dims[i],
                           hidden_dim // num_head,
                           num_head,
                           feat_drop=dropout,
                           attn_drop=dropout,
                           activation=nn.ELU()))
-            
+
             self.norms.append(nn.LayerNorm(hidden_dim))
 
         self.out_norm = nn.LayerNorm(out_dim)
-        
+
         if hidden_dims[-1] != out_dim:
             self.transform = nn.Linear(hidden_dims[-1], out_dim)
         else:
@@ -59,7 +59,7 @@ class GAT(nn.Module):
 
     def forward(self, input, graph):
         h = input
-        
+
         if self.use_edge_weights and 'weight' in graph.edata:
             edge_weights = graph.edata['weight']
         else:
@@ -67,19 +67,19 @@ class GAT(nn.Module):
 
         for i in range(self.num_layers):
             h_prev = h
-            
+
             h_new = self.gat_layers[i](graph, h, edge_weight=edge_weights)
-            
+
             if self.residual and h_new.shape == h_prev.shape:
                 h_new = h_new + h_prev
-            
+
             h_new = self.norms[i](h_new)
             h_new = self.dropout(h_new)
-            
+
             h = h_new
 
         output = self.transform(h)
-        
+
         output = self.out_norm(output)
 
         return output
