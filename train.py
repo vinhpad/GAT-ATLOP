@@ -1,5 +1,6 @@
 import argparse
 import os
+import wandb
 
 import numpy as np
 import torch
@@ -11,7 +12,6 @@ from model import DocREModel
 from utils import set_seed, collate_fn
 from prepro import read_docred
 from evaluation import to_official, official_evaluate
-import wandb
 from torch.cuda.amp import GradScaler
 from tqdm import tqdm
 

@@ -6,7 +6,7 @@ from long_seq import process_long_input
 from losses import ATLoss
 import torch.nn.functional as F
 import math
-import pickle
+# import pickle
 
 
 class DocREModel(nn.Module):
@@ -24,37 +24,34 @@ class DocREModel(nn.Module):
         self.loss_fnt = ATLoss()
 
         # Query and Key transformation matrices for attention
-        self.W_q = nn.Linear(config.hidden_size,
-                             config.hidden_size,
-                             bias=False)
-        self.W_k = nn.Linear(config.hidden_size,
-                             config.hidden_size,
-                             bias=False)
-        self.linear1 = nn.Linear(2 * config.hidden_size, config.num_labels)
-        self.linear2 = nn.Linear(2 * config.num_labels, config.num_labels)
+        self.W_q = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        self.W_k = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
+        
+        # Bilinear transformation for entity embeddings
+        self.entity_bilinear = nn.Bilinear(config.hidden_size, config.hidden_size, config.num_labels, bias=False)
 
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
-        self.bilinear1 = nn.Linear(emb_size * block_size, config.hidden_size)
+        self.bilinear = nn.Linear(emb_size * block_size, config.num_labels)
+        
+        
+        
         self.emb_size = emb_size
         self.block_size = block_size
         self.num_labels = num_labels
 
-        # Cập nhật lớp GAT với các tham số tối ưu cho đồ thị phức tạp
-        self.gat = GAT(
-            num_layers=3,  # Tăng số lượng layer
-            in_dim=config.hidden_size,
-            out_dim=config.hidden_size,
-            num_head=8,
-            dropout=0.1,
-            use_edge_weights=True,  # Sử dụng trọng số cạnh
-            residual=True  # Sử dụng kết nối dư
-        )
+        self.gat = GAT(num_layers=2,
+                       in_dim=768,
+                       num_hidden=500,
+                       num_classes=768,
+                       heads=([2] * 2) + [1],
+                       activation=F.elu,
+                       feat_drop=0,
+                       attn_drop=0,
+                       negative_slope=0.2,
+                       residual=False)
 
-        self.bilinear = nn.Linear(config.num_labels * 3, config.num_labels)
-        self.label_embedding = pickle.load(
-            open("data/label_embedding.pkl", "rb"))
-        self.label_embedding = torch.tensor(self.label_embedding).float()
+        # self.bilinear = nn.Linear(config.num_labels * 2, config.num_labels)
 
     def encode(self, input_ids, attention_mask):
         config = self.config
@@ -89,38 +86,29 @@ class DocREModel(nn.Module):
         # Process head and tail mentions together
         ht_mentions = torch.cat(
             [
-                entity_mentions[
-                    h_indices],  # [num_pairs, max_mentions, hidden_size]
-                entity_mentions[
-                    t_indices]  # [num_pairs, max_mentions, hidden_size]
+                entity_mentions[h_indices],  # [num_pairs, max_mentions, hidden_size]
+                entity_mentions[t_indices]  # [num_pairs, max_mentions, hidden_size]
             ],
             dim=1)  # [num_pairs, 2*max_mentions, hidden_size]
 
         # Transform mentions
-        k_ht = self.W_k(
-            ht_mentions)  # [num_pairs, 2*max_mentions, hidden_size]
+        k_ht = self.W_k(ht_mentions)  # [num_pairs, 2*max_mentions, hidden_size]
 
         # Calculate attention scores for both head and tail
-        scores = torch.bmm(k_ht, q_c.unsqueeze(-1)).squeeze(
-            -1)  # [num_pairs, 2*max_mentions]
+        scores = torch.bmm(k_ht, q_c.unsqueeze(-1)).squeeze(-1)  # [num_pairs, 2*max_mentions]
         scores = scores / math.sqrt(self.hidden_size)
 
         # Split scores for head and tail
         h_scores, t_scores = scores.chunk(2, dim=1)
 
         # Apply softmax separately for head and tail
-        h_attention_weights = F.softmax(h_scores,
-                                        dim=-1)  # [num_pairs, max_mentions]
-        t_attention_weights = F.softmax(t_scores,
-                                        dim=-1)  # [num_pairs, max_mentions]
+        h_attention_weights = F.softmax(h_scores, dim=-1)  # [num_pairs, max_mentions]
+        t_attention_weights = F.softmax(t_scores, dim=-1)  # [num_pairs, max_mentions]
 
         # Calculate entity representations
-        h_mentions, t_mentions = entity_mentions[h_indices], entity_mentions[
-            t_indices]
-        h_entity = torch.bmm(h_attention_weights.unsqueeze(1),
-                             h_mentions).squeeze(1)
-        t_entity = torch.bmm(t_attention_weights.unsqueeze(1),
-                             t_mentions).squeeze(1)
+        h_mentions, t_mentions = entity_mentions[h_indices], entity_mentions[t_indices]
+        h_entity = torch.bmm(h_attention_weights.unsqueeze(1), h_mentions).squeeze(1)
+        t_entity = torch.bmm(t_attention_weights.unsqueeze(1), t_mentions).squeeze(1)
 
         return h_entity, t_entity
 
@@ -189,7 +177,7 @@ class DocREModel(nn.Module):
         features = torch.zeros(num_node,
                                self.config.hidden_size,
                                device=sequence_output.device)
-        features[num_node - 97:num_node, :] = self.label_embedding
+
         # Get features for graph nodes
         node_offset = 0
         for i in range(batch_size):
@@ -205,8 +193,8 @@ class DocREModel(nn.Module):
 
             features[node_offset, :] = sequence_output[i, 0]
             node_offset = node_offset + 1
-        label_embedding = features[node_offset:node_offset +
-                                   self.config.num_labels, :]
+        # label_embedding = features[node_offset:node_offset +
+        #                            self.config.num_labels, :]
 
         # Apply GAT
         features = self.gat(features, graphs.to(sequence_output.device))
@@ -240,7 +228,7 @@ class DocREModel(nn.Module):
         h_entity, t_entity = self.get_entity_representation(
             all_entity_embs, local_context, hts)
 
-        return h_entity, t_entity, label_embedding
+        return h_entity, t_entity
 
     def forward(self,
                 input_ids=None,
@@ -254,27 +242,24 @@ class DocREModel(nn.Module):
         hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
 
         # GATv2 enhancement
-        hs_enhacement, ts_enhancement, label_embedding = self.graph(
+        hs_enhacement, ts_enhancement = self.graph(
             sequence_output, graphs, attention, entity_pos, hts, rs)
-        graph_relation_info = self.linner1(
-            torch.cat([hs_enhacement, ts_enhancement], dim=1))
-        hs_with_labelinfo = torch.matmul(hs, label_embedding.transpose(0, 1))
-        ts_with_labelinfo = torch.matmul(ts, label_embedding.transpose(0, 1))
-        logits_with_labelinfo = self.linear2(
-            torch.cat((hs_with_labelinfo, ts_with_labelinfo), dim=1))
+
+        # Apply bilinear transformation to entity embeddings
+        entity_scores = self.entity_bilinear(hs, ts)  # [batch_size, num_labels]
 
         hs = torch.tanh(
-            self.head_extractor(torch.cat([hs_enhacement, rs], dim=1)))
+            self.head_extractor(torch.cat([hs, rs, hs_enhacement], dim=1)))
         ts = torch.tanh(
-            self.tail_extractor(torch.cat([ts_enhancement, rs], dim=1)))
+            self.tail_extractor(torch.cat([ts, rs, ts_enhancement], dim=1)))
         b1 = hs.view(-1, self.emb_size // self.block_size, self.block_size)
         b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)
-        bl = self.bilinear1((b1.unsqueeze(3) * b2.unsqueeze(2)).view(
+        bl = self.bilinear((b1.unsqueeze(3) * b2.unsqueeze(2)).view(
             -1, self.emb_size * self.block_size))
 
-        logits = self.bilinear(
-            torch.cat([bl, graph_relation_info, logits_with_labelinfo], dim=1))
-
+        # Combine bilinear scores with entity scores
+        logits = bl + entity_scores  # Add entity scores to the final logits
+        
         output = (self.loss_fnt.get_label(logits,
                                           num_labels=self.num_labels), )
         if labels is not None:
@@ -283,20 +268,3 @@ class DocREModel(nn.Module):
             loss = self.loss_fnt(logits.float(), labels.float())
             output = (loss.to(sequence_output), ) + output
         return output
-
-
-class FNN(nn.Module):
-
-    def __init__(self, input_size, output_size):
-        super(FNN, self).__init__()
-        self.fc1 = nn.Linear(input_size, input_size // 2)
-        self.relu = nn.ReLU()
-        self.fc2 = nn.Linear(input_size // 2, output_size)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.relu(x)
-        x = self.fc2(x)
-        x = self.sigmoid(x)
-        return x
