@@ -311,7 +311,7 @@ def main():
 
     set_seed(args)
     model = DocREModel(config, model, num_labels=args.num_labels)
-    model.to(0)
+    model.to(args.device)
 
     if args.load_path == "":  # Training
         train(args, model, train_features, dev_features, test_features)

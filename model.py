@@ -52,7 +52,7 @@ class DocREModel(nn.Module):
                        residual=False)
 
         # self.bilinear = nn.Linear(config.num_labels * 2, config.num_labels)
-
+    
     def encode(self, input_ids, attention_mask):
         config = self.config
         if config.transformer_type == "bert":
@@ -61,9 +61,8 @@ class DocREModel(nn.Module):
         elif config.transformer_type == "roberta":
             start_tokens = [config.cls_token_id]
             end_tokens = [config.sep_token_id, config.sep_token_id]
-        sequence_output, attention = process_long_input(
-            self.model, input_ids, attention_mask, start_tokens, end_tokens)
-        return sequence_output, attention
+        # process long documents.
+        sequence_output, attention = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens)
 
     def get_entity_representation(self, entity_mentions, local_context, hts):
         """
@@ -246,12 +245,12 @@ class DocREModel(nn.Module):
             sequence_output, graphs, attention, entity_pos, hts, rs)
 
         # Apply bilinear transformation to entity embeddings
-        entity_scores = self.entity_bilinear(hs, ts)  # [batch_size, num_labels]
+        entity_scores = self.entity_bilinear(hs_enhacement, ts_enhancement)  # [batch_size, num_labels]
 
         hs = torch.tanh(
-            self.head_extractor(torch.cat([hs, rs, hs_enhacement], dim=1)))
+            self.head_extractor(torch.cat([hs, rs], dim=1)))
         ts = torch.tanh(
-            self.tail_extractor(torch.cat([ts, rs, ts_enhancement], dim=1)))
+            self.tail_extractor(torch.cat([ts, rs], dim=1)))
         b1 = hs.view(-1, self.emb_size // self.block_size, self.block_size)
         b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)
         bl = self.bilinear((b1.unsqueeze(3) * b2.unsqueeze(2)).view(

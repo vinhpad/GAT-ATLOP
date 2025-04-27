@@ -124,7 +124,7 @@ def build_graph(entity_pos, sent_pos, sents=None, entities=None):
                                  if start <= mention2[0] < end)
 
                     # Only connect mentions in same or adjacent sentences
-                    if abs(sent1 - sent2) <= 1:
+                    if sent1 == sent2 or (sent2 - sent1 == 1 and (entity_idx2 == len(entity_pos) - 1 )):
                         u.append(mention_idx_offset[entity_idx1][entity1.index(
                             mention1)])
                         v.append(mention_idx_offset[entity_idx2][entity2.index(
@@ -133,79 +133,12 @@ def build_graph(entity_pos, sent_pos, sents=None, entities=None):
                         weight = 1.0 if sent1 == sent2 else 0.5
                         edge_weights.append(weight)
 
-    # 4. Add anaphors nodes and edges if sents and entities are provided
-    anaphor_idx = document_idx + 1
-    if sents is not None and entities is not None:
-        # Get all entity names for filtering
-        all_mentions = []
-        for entity in entities:
-            for mention in entity:
-                all_mentions.append(mention.get('name', ''))
-
-        # Get anaphors
-        anaphors = get_anaphors(sents, all_mentions)
-
-        # Add anaphor nodes and connect them to potential antecedents
-        for anaphor in anaphors:
-            anaphor_sent_id = anaphor['sent_id']
-            anaphor_pos = anaphor['pos']
-
-            # Find the sentence position for this anaphor
-            anaphor_sent_pos = None
-            for i, (start, end) in enumerate(sent_pos):
-                if i == anaphor_sent_id:
-                    anaphor_sent_pos = (start + anaphor_pos[0],
-                                        start + anaphor_pos[1])
-                    break
-
-            if anaphor_sent_pos:
-                # Connect anaphor to document node
-                u.append(document_idx)
-                v.append(anaphor_idx)
-                edge_weights.append(0.3)  # Lower weight for anaphors
-
-                v.append(document_idx)
-                u.append(anaphor_idx)
-                edge_weights.append(0.3)
-
-                # Connect anaphor to potential antecedents in previous sentences
-                for entity_idx, entity in enumerate(entities):
-                    for mention_idx, mention in enumerate(entity):
-                        if mention[
-                                'sent_id'] < anaphor_sent_id:  # Only connect to mentions in previous sentences
-                            # Add edge from anaphor to potential antecedent
-                            u.append(anaphor_idx)
-                            v.append(
-                                mention_idx_offset[entity_idx][mention_idx])
-
-                            # Weight based on sentence distance and entity type compatibility
-                            sent_distance = anaphor_sent_id - mention['sent_id']
-                            weight = 0.7 / (1 + sent_distance
-                                            )  # Decay with distance
-
-                            # Adjust weight based on entity type compatibility with pronoun
-                            if anaphor['name'].lower() in [
-                                    'he', 'she', 'his', 'her'
-                            ] and mention.get('type') == 'PER':
-                                weight *= 1.5  # Boost for personal pronouns matching person entities
-                            elif anaphor['name'].lower() in [
-                                    'it', 'its'
-                            ] and mention.get('type') in [
-                                    'ORG', 'LOC', 'MISC'
-                            ]:
-                                weight *= 1.3  # Boost for it/its matching non-person entities
-
-                            edge_weights.append(weight)
-
-                anaphor_idx += 1
-
     # Create graph with edge weights
     for edge_id in range(len(u)):
         assert u[edge_id] != v[
             edge_id], f"Exist self edge {u[edge_id]} to {v[edge_id]}"
 
-    graph = dgl.graph((torch.tensor(u), torch.tensor(v)),
-                      num_nodes=max(anaphor_idx, document_idx + 1))
+    graph = dgl.graph((torch.tensor(u), torch.tensor(v)), num_nodes= document_idx + 1)
     graph.edata['weight'] = torch.tensor(edge_weights, dtype=torch.float)
     graph = dgl.add_self_loop(graph)
 
@@ -280,7 +213,13 @@ def read_docred(file_in, tokenizer, max_seq_length=1024):
                         'evidence':
                         evidence
                     })
+        # get anaphors in the doc
+        mentions = set([m['name'] for e in entities for m in e])
 
+        potential_mention = get_anaphors(sample['sents'], mentions)
+
+        entities.append(potential_mention)
+        
         entity_pos = []
         for e in entities:
             entity_pos.append([])
@@ -302,15 +241,15 @@ def read_docred(file_in, tokenizer, max_seq_length=1024):
             hts.append([h, t])
             pos_samples += 1
 
-        for h in range(len(entities)):
-            for t in range(len(entities)):
+        for h in range(len(entities)-1):
+            for t in range(len(entities)-1):
                 if h != t and [h, t] not in hts:
                     relation = [1] + [0] * (len(docred_rel2id) - 1)
                     relations.append(relation)
                     hts.append([h, t])
                     neg_samples += 1
 
-        assert len(relations) == len(entities) * (len(entities) - 1)
+        assert len(relations) == (len(entities)-2) * (len(entities) - 1)
 
         sents = sents[:max_seq_length - 2]
         input_ids = tokenizer.convert_tokens_to_ids(sents)
