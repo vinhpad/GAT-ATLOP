@@ -6,21 +6,12 @@ import numpy as np
 from tqdm import tqdm
 
 docred_rel2id = json.load(open('meta/rel2id.json', 'r'))
-docred_ent2id = {
-    'NA': 0,
-    'ORG': 1,
-    'LOC': 2,
-    'NUM': 3,
-    'TIME': 4,
-    'MISC': 5,
-    'PER': 6
-}
+docred_ent2id = {'NA': 0, 'ORG': 1, 'LOC': 2, 'NUM': 3, 'TIME': 4, 'MISC': 5, 'PER': 6}
 
 from spacy.tokens import Doc
 import spacy
 
 nlp = spacy.load('en_core_web_sm')
-
 
 def chunks(l, n):
     res = []
@@ -28,7 +19,6 @@ def chunks(l, n):
         assert len(l[i:i + n]) == n
         res += [l[i:i + n]]
     return res
-
 
 def get_anaphors(sents, mentions):
     potential_mentions = []
@@ -42,10 +32,8 @@ def get_anaphors(sents, mentions):
         for token in doc_spacy:
             potential_mention = ''
             if token.dep_ == 'det' and token.text.lower() == 'the':
-                potential_name = doc_spacy.text[token.idx:token.head.idx +
-                                                len(token.head.text)]
-                pos_start, pos_end = token.i, token.i + len(
-                    potential_name.split(' '))
+                potential_name = doc_spacy.text[token.idx:token.head.idx + len(token.head.text)]
+                pos_start, pos_end = token.i, token.i + len(potential_name.split(' '))
                 potential_mention = {
                     'pos': [pos_start, pos_end],
                     'type': 'MISC',
@@ -63,14 +51,12 @@ def get_anaphors(sents, mentions):
                 }
 
             if potential_mention:
-                if not any(mention in potential_mention['name']
-                           for mention in mentions):
+                if not any(mention in potential_mention['name'] for mention in mentions):
                     potential_mentions.append(potential_mention)
 
     return potential_mentions
 
-
-def build_graph(entity_pos, sent_pos, sents=None, entities=None):
+def build_graph(entity_pos, sent_pos):
     u = []
     v = []
     edge_weights = []  # Add edge weights
@@ -88,7 +74,6 @@ def build_graph(entity_pos, sent_pos, sents=None, entities=None):
                     continue
                 u.append(mention_idx + mention_id1)
                 v.append(mention_idx + mention_id2)
-                edge_weights.append(1.0)  # High weight for same entity
         mention_idx += len(entity)
 
     # 2. Document-mention edges (weighted by mention importance)
@@ -99,14 +84,11 @@ def build_graph(entity_pos, sent_pos, sents=None, entities=None):
             # Document -> Mention (weight based on number of mentions)
             u.append(document_idx)
             v.append(mention_idx + mention_id)
-            edge_weights.append(
-                1.0 / len(entity)
-            )  # Weight inversely proportional to number of mentions
 
             # Mention -> Document
             v.append(document_idx)
             u.append(mention_idx + mention_id)
-            edge_weights.append(1.0 / len(entity))
+
         mention_idx += len(entity)
 
     # 3. Inter-entity edges (only between mentions in same or adjacent sentences)
@@ -124,22 +106,16 @@ def build_graph(entity_pos, sent_pos, sents=None, entities=None):
                                  if start <= mention2[0] < end)
 
                     # Only connect mentions in same or adjacent sentences
-                    if sent1 == sent2 or (sent2 - sent1 == 1 and (entity_idx2 == len(entity_pos) - 1 )):
-                        u.append(mention_idx_offset[entity_idx1][entity1.index(
-                            mention1)])
-                        v.append(mention_idx_offset[entity_idx2][entity2.index(
-                            mention2)])
-                        # Weight based on sentence distance
-                        weight = 1.0 if sent1 == sent2 else 0.5
-                        edge_weights.append(weight)
+                    if abs(sent1 - sent2) <= 1:
+                        u.append(mention_idx_offset[entity_idx1][entity1.index(mention1)])
+                        v.append(mention_idx_offset[entity_idx2][entity2.index(mention2)])
 
     # Create graph with edge weights
     for edge_id in range(len(u)):
         assert u[edge_id] != v[
             edge_id], f"Exist self edge {u[edge_id]} to {v[edge_id]}"
 
-    graph = dgl.graph((torch.tensor(u), torch.tensor(v)), num_nodes= document_idx + 1)
-    graph.edata['weight'] = torch.tensor(edge_weights, dtype=torch.float)
+    graph = dgl.graph((torch.tensor(u), torch.tensor(v)), num_nodes=(document_idx + 1))
     graph = dgl.add_self_loop(graph)
 
     return graph
@@ -213,13 +189,14 @@ def read_docred(file_in, tokenizer, max_seq_length=1024):
                         'evidence':
                         evidence
                     })
+
         # get anaphors in the doc
         mentions = set([m['name'] for e in entities for m in e])
 
         potential_mention = get_anaphors(sample['sents'], mentions)
 
         entities.append(potential_mention)
-        
+
         entity_pos = []
         for e in entities:
             entity_pos.append([])
@@ -231,6 +208,8 @@ def read_docred(file_in, tokenizer, max_seq_length=1024):
                     end,
                 ))
 
+        
+
         relations, hts = [], []
         for h, t in train_triple.keys():
             relation = [0] * len(docred_rel2id)
@@ -241,22 +220,22 @@ def read_docred(file_in, tokenizer, max_seq_length=1024):
             hts.append([h, t])
             pos_samples += 1
 
-        for h in range(len(entities)-1):
-            for t in range(len(entities)-1):
+        for h in range(len(entities) - 1):
+            for t in range(len(entities) - 1):
                 if h != t and [h, t] not in hts:
                     relation = [1] + [0] * (len(docred_rel2id) - 1)
                     relations.append(relation)
                     hts.append([h, t])
                     neg_samples += 1
 
-        assert len(relations) == (len(entities)-2) * (len(entities) - 1)
+        assert len(relations) == (len(entities) - 1) * (len(entities) - 2)
 
         sents = sents[:max_seq_length - 2]
         input_ids = tokenizer.convert_tokens_to_ids(sents)
         input_ids = tokenizer.build_inputs_with_special_tokens(input_ids)
 
         # Pass original sentences and entities to build_graph
-        graph = build_graph(entity_pos, sent_pos, sample['sents'], entities)
+        graph = build_graph(entity_pos, sent_pos)
         i_line += 1
         feature = {
             'input_ids': input_ids,

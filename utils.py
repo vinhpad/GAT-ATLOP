@@ -23,26 +23,7 @@ def collate_fn(batch):
     entity_pos = [f["entity_pos"] for f in batch]
     hts = [f["hts"] for f in batch]
     graphs = [f["graph"] for f in batch]
-
-    doc_ids = [graph.num_nodes() - 1 for graph in graphs]
-
     graphs = dgl.batch(graphs)
-
-    # num_nodes = graphs.num_nodes()
-    # graphs = dgl.add_nodes(graphs, 97)
-
-    # for doc_id in doc_ids:
-    #     for i in range(97):
-    #         if not graphs.has_edge_between(doc_id, i + num_nodes):
-    #             graphs.add_edge(doc_id, i + num_nodes)
-    #         if not graphs.has_edge_between(i + num_nodes, doc_id):
-    #             graphs.add_edge(i + num_nodes, doc_id)
-
-    # for i in range(97):
-    #     for j in range(97):
-    #         if i != j:
-    #             if not graphs.has_edge_between(i + num_nodes, j + num_nodes):
-    #                 graphs.add_edge(i + num_nodes, j + num_nodes)
 
     input_ids = torch.tensor(input_ids, dtype=torch.long)
     input_mask = torch.tensor(input_mask, dtype=torch.float)

@@ -27,15 +27,10 @@ class DocREModel(nn.Module):
         self.W_q = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         self.W_k = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
         
-        # Bilinear transformation for entity embeddings
-        self.entity_bilinear = nn.Bilinear(config.hidden_size, config.hidden_size, config.num_labels, bias=False)
-
+        
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.bilinear = nn.Linear(emb_size * block_size, config.num_labels)
-        
-        self.bilinear_graph_integration = nn.Linear(config.num_labels * 2, config.num_labels)
-        
         self.emb_size = emb_size
         self.block_size = block_size
         self.num_labels = num_labels
@@ -51,8 +46,11 @@ class DocREModel(nn.Module):
                        negative_slope=0.2,
                        residual=False)
 
+        # Bilinear transformation for entity embeddings
+        self.entity_bilinear = nn.Bilinear(config.hidden_size, config.hidden_size, config.num_labels, bias=False)
+        self.bilinear_graph_integration = nn.Linear(config.num_labels * 2, config.num_labels)
         # self.bilinear = nn.Linear(config.num_labels * 2, config.num_labels)
-    
+
     def encode(self, input_ids, attention_mask):
         config = self.config
         if config.transformer_type == "bert":
@@ -61,8 +59,9 @@ class DocREModel(nn.Module):
         elif config.transformer_type == "roberta":
             start_tokens = [config.cls_token_id]
             end_tokens = [config.sep_token_id, config.sep_token_id]
-        # process long documents.
-        sequence_output, attention = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens)
+        sequence_output, attention = process_long_input(
+            self.model, input_ids, attention_mask, start_tokens, end_tokens)
+        return sequence_output, attention
 
     def get_entity_representation(self, entity_mentions, local_context, hts):
         """
@@ -243,8 +242,6 @@ class DocREModel(nn.Module):
         # GATv2 enhancement
         hs_enhacement, ts_enhancement = self.graph(
             sequence_output, graphs, attention, entity_pos, hts, rs)
-
-        # Apply bilinear transformation to entity embeddings
         entity_scores = self.entity_bilinear(hs_enhacement, ts_enhancement)  # [batch_size, num_labels]
 
         hs = torch.tanh(
@@ -256,10 +253,7 @@ class DocREModel(nn.Module):
         bl = self.bilinear((b1.unsqueeze(3) * b2.unsqueeze(2)).view(
             -1, self.emb_size * self.block_size))
 
-        # Combine bilinear scores with entity scores
-        logits = self.bilinear_graph_integration(torch.cat([bl, entity_scores], dim=1))  
-        # Add entity scores to the final logits
-        
+        logits = self.bilinear_graph_integration(torch.cat([bl, entity_scores], dim=1))
         output = (self.loss_fnt.get_label(logits,
                                           num_labels=self.num_labels), )
         if labels is not None:

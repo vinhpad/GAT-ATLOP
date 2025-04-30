@@ -1,6 +1,5 @@
 import argparse
 import os
-import wandb
 
 import numpy as np
 import torch
@@ -12,6 +11,7 @@ from model import DocREModel
 from utils import set_seed, collate_fn
 from prepro import read_docred
 from evaluation import to_official, official_evaluate
+import wandb
 from torch.cuda.amp import GradScaler
 from tqdm import tqdm
 
@@ -89,7 +89,7 @@ def train(args, model, train_features, dev_features, test_features):
                             torch.save(model.state_dict(), args.save_path)
         return num_steps
 
-    new_layer = ["extractor", "bilinear", 'gat']
+    new_layer = ["extractor", 'gat', 'W', 'linear']
     optimizer_grouped_parameters = [
         {
             "params": [
