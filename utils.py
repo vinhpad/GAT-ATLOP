@@ -23,7 +23,6 @@ def collate_fn(batch):
     entity_pos = [f["entity_pos"] for f in batch]
     hts = [f["hts"] for f in batch]
     graphs = [f["graph"] for f in batch]
-    graphs = dgl.batch(graphs)
 
     input_ids = torch.tensor(input_ids, dtype=torch.long)
     input_mask = torch.tensor(input_mask, dtype=torch.float)

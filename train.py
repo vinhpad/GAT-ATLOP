@@ -3,7 +3,7 @@ import os
 
 import numpy as np
 import torch
-import ujson as json
+import json
 from torch.utils.data import DataLoader
 from transformers import AutoConfig, AutoModel, AutoTokenizer
 from transformers.optimization import AdamW, get_linear_schedule_with_warmup

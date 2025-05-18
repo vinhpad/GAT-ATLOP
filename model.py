@@ -1,12 +1,10 @@
 import torch
 import torch.nn as nn
 from opt_einsum import contract
-from gat import GAT
+from graph import GAT, AttentionGCNLayer
 from long_seq import process_long_input
 from losses import ATLoss
 import torch.nn.functional as F
-import math
-# import pickle
 
 
 class DocREModel(nn.Module):
@@ -23,10 +21,6 @@ class DocREModel(nn.Module):
         self.hidden_size = config.hidden_size
         self.loss_fnt = ATLoss()
 
-        # Query and Key transformation matrices for attention
-        self.W_q = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        self.W_k = nn.Linear(config.hidden_size, config.hidden_size, bias=False)
-        
         
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
@@ -37,7 +31,7 @@ class DocREModel(nn.Module):
 
         self.gat = GAT(num_layers=2,
                        in_dim=768,
-                       num_hidden=500,
+                       num_hidden=512,
                        num_classes=768,
                        heads=([2] * 2) + [1],
                        activation=F.elu,
@@ -48,9 +42,35 @@ class DocREModel(nn.Module):
 
         # Bilinear transformation for entity embeddings
         self.entity_bilinear = nn.Bilinear(config.hidden_size, config.hidden_size, config.num_labels, bias=False)
-        self.bilinear_graph_integration = nn.Linear(config.num_labels * 2, config.num_labels)
-        # self.bilinear = nn.Linear(config.num_labels * 2, config.num_labels)
+        self.node_embed_extractor = nn.Sequential(
+            nn.Linear(config.hidden_size * 4 + 1, 768 * 2),
+            nn.ReLU(),
+            nn.Linear(768 * 2, 768)
+        )
 
+        self.graph_layers = nn.ModuleList(
+                AttentionGCNLayer(self.edges, self.hidden_size, nhead=2, iters=1) for _ in
+                range(2))
+
+    def graph(self, head_embed, tail_embed, local_context):
+        batch_size = len(head_embed)
+        ns = []
+        for batch_id in range(batch_size):
+            hs = head_embed[batch_id]
+            ts = tail_embed[batch_id]
+            rs = local_context[batch_id]
+
+            ers = self.entity_bilinear(hs, ts)
+            cos = torch.cosine_similarity(hs, ts, dim=-1).unsqueeze(-1)
+            node_embed = torch.tanh(self.node_embed_extractor(torch.cat([hs, ts, cos, ers, rs], dim=-1)))
+            ns.append(node_embed)
+
+        for graph_layer in self.graph_layers:
+            ns = graph_layer(ns)
+            
+        return torch.cat(ns, dim=0)
+
+    
     def encode(self, input_ids, attention_mask):
         config = self.config
         if config.transformer_type == "bert":
@@ -62,53 +82,6 @@ class DocREModel(nn.Module):
         sequence_output, attention = process_long_input(
             self.model, input_ids, attention_mask, start_tokens, end_tokens)
         return sequence_output, attention
-
-    def get_entity_representation(self, entity_mentions, local_context, hts):
-        """
-        Calculate entity representation using attention mechanism from paper
-        entity_mentions: entity mentions tensor [num_entities, max_mentions, hidden_size]
-        local_context: context vector from hrt [num_pairs, hidden_size]
-        hts: list of head-tail pairs for each batch
-        """
-        # Transform local context
-        q_c = self.W_q(local_context)  # [num_pairs, hidden_size]
-
-        # Convert list of hts to flat indices
-        all_hts = []
-        for batch_hts in hts:
-            all_hts.extend(batch_hts)
-        indices = torch.tensor(all_hts, device=local_context.device)
-
-        h_indices, t_indices = indices[:, 0], indices[:, 1]
-
-        # Process head and tail mentions together
-        ht_mentions = torch.cat(
-            [
-                entity_mentions[h_indices],  # [num_pairs, max_mentions, hidden_size]
-                entity_mentions[t_indices]  # [num_pairs, max_mentions, hidden_size]
-            ],
-            dim=1)  # [num_pairs, 2*max_mentions, hidden_size]
-
-        # Transform mentions
-        k_ht = self.W_k(ht_mentions)  # [num_pairs, 2*max_mentions, hidden_size]
-
-        # Calculate attention scores for both head and tail
-        scores = torch.bmm(k_ht, q_c.unsqueeze(-1)).squeeze(-1)  # [num_pairs, 2*max_mentions]
-        scores = scores / math.sqrt(self.hidden_size)
-
-        # Split scores for head and tail
-        h_scores, t_scores = scores.chunk(2, dim=1)
-
-        # Apply softmax separately for head and tail
-        h_attention_weights = F.softmax(h_scores, dim=-1)  # [num_pairs, max_mentions]
-        t_attention_weights = F.softmax(t_scores, dim=-1)  # [num_pairs, max_mentions]
-
-        # Calculate entity representations
-        h_mentions, t_mentions = entity_mentions[h_indices], entity_mentions[t_indices]
-        h_entity = torch.bmm(h_attention_weights.unsqueeze(1), h_mentions).squeeze(1)
-        t_entity = torch.bmm(t_attention_weights.unsqueeze(1), t_mentions).squeeze(1)
-
-        return h_entity, t_entity
 
     def get_hrt(self, sequence_output, attention, entity_pos, hts):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"
@@ -160,105 +133,40 @@ class DocREModel(nn.Module):
             hss.append(hs)
             tss.append(ts)
             rss.append(rs)
+
+        nss = self.graph(hss, tss, rss)
         hss = torch.cat(hss, dim=0)
         tss = torch.cat(tss, dim=0)
         rss = torch.cat(rss, dim=0)
-        return hss, rss, tss
-
-    def graph(self, sequence_output, graphs, attention, entity_pos, hts,
-              local_context):
-        offset = 1 if self.config.transformer_type in ["bert", "roberta"
-                                                       ] else 0
-        batch_size, h, _, c = attention.size()
-
-        num_node = graphs.num_nodes()
-        features = torch.zeros(num_node,
-                               self.config.hidden_size,
-                               device=sequence_output.device)
-
-        # Get features for graph nodes
-        node_offset = 0
-        for i in range(batch_size):
-            for entity_per_batch in entity_pos[i]:
-                for start, _ in entity_per_batch:
-                    if start + offset < c:
-                        features[node_offset, :] = sequence_output[i, start +
-                                                                   offset]
-                    else:
-                        features[node_offset, :] = torch.zeros(
-                            self.config.hidden_size).to(sequence_output)
-                    node_offset = node_offset + 1
-
-            features[node_offset, :] = sequence_output[i, 0]
-            node_offset = node_offset + 1
-        # label_embedding = features[node_offset:node_offset +
-        #                            self.config.num_labels, :]
-
-        # Apply GAT
-        features = self.gat(features, graphs.to(sequence_output.device))
-
-        # Process entities with local context
-        all_entity_embs = []  # [num_entities, max_mentions, hidden_size]
-        node_offset = 0
-        max_mentions = max(len(e) for entities in entity_pos for e in entities)
-
-        for i in range(len(entity_pos)):
-            batch_entity_embs = []
-            for e in entity_pos[i]:
-                # Get mentions for current entity
-                e_mentions = features[node_offset:node_offset + len(e), :]
-                # Pad to max_mentions
-                if len(e) < max_mentions:
-                    padding = torch.zeros(max_mentions - len(e),
-                                          self.config.hidden_size,
-                                          device=features.device)
-                    e_mentions = torch.cat([e_mentions, padding], dim=0)
-                batch_entity_embs.append(e_mentions)
-                node_offset += len(e)
-            node_offset += 1  # Skip CLS token
-            all_entity_embs.extend(batch_entity_embs)
-
-        all_entity_embs = torch.stack(
-            all_entity_embs,
-            dim=0)  # [num_entities, max_mentions, hidden_size]
-
-        # Get entity representations
-        h_entity, t_entity = self.get_entity_representation(
-            all_entity_embs, local_context, hts)
-
-        return h_entity, t_entity
+        return hss, rss, tss, nss
+    
 
     def forward(self,
                 input_ids=None,
                 attention_mask=None,
                 labels=None,
                 entity_pos=None,
-                hts=None,
-                graphs=None):
+                hts=None):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
-        hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
+        hs, rs, ts, ns = self.get_hrt(sequence_output, attention, entity_pos, hts)
 
-        # GATv2 enhancement
-        hs_enhacement, ts_enhancement = self.graph(
-            sequence_output, graphs, attention, entity_pos, hts, rs)
-        entity_scores = self.entity_bilinear(hs_enhacement, ts_enhancement)  # [batch_size, num_labels]
-
-        hs = torch.tanh(
-            self.head_extractor(torch.cat([hs, rs], dim=1)))
-        ts = torch.tanh(
-            self.tail_extractor(torch.cat([ts, rs], dim=1)))
+       
+        hs = torch.tanh(self.head_extractor(torch.cat([hs, rs, ns], dim=1)))
+        ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs, ns], dim=1)))
         b1 = hs.view(-1, self.emb_size // self.block_size, self.block_size)
         b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)
-        bl = self.bilinear((b1.unsqueeze(3) * b2.unsqueeze(2)).view(
-            -1, self.emb_size * self.block_size))
+        bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.emb_size * self.block_size)
 
-        logits = self.bilinear_graph_integration(torch.cat([bl, entity_scores], dim=1))
+        logits = self.bilinear(bl)
+
         output = (self.loss_fnt.get_label(logits,
                                           num_labels=self.num_labels), )
         if labels is not None:
             labels = [torch.tensor(label) for label in labels]
+
             labels = torch.cat(labels, dim=0).to(logits)
             loss = self.loss_fnt(logits.float(), labels.float())
             output = (loss.to(sequence_output), ) + output
         return output
+

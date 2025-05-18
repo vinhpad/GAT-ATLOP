@@ -29,6 +29,7 @@ class ATLoss(nn.Module):
         loss = loss1 + loss2
         loss = loss.mean()
         return loss
+    
 
     def get_label(self, logits, num_labels=-1):
         th_logit = logits[:, 0].unsqueeze(1)
