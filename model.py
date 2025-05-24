@@ -1,11 +1,10 @@
 import torch
 import torch.nn as nn
 from opt_einsum import contract
-from graph import GAT, AttentionGCNLayer
 from long_seq import process_long_input
 from losses import ATLoss
 import torch.nn.functional as F
-
+from mlp import MLP
 
 class DocREModel(nn.Module):
 
@@ -24,53 +23,13 @@ class DocREModel(nn.Module):
         
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
-        self.bilinear = nn.Linear(emb_size * block_size, config.num_labels)
+        
         self.emb_size = emb_size
         self.block_size = block_size
         self.num_labels = num_labels
+        self.mlp = MLP(emb_size * block_size, 512, 8)
+        self.bilinear = nn.Linear(512, config.num_labels)
 
-        self.gat = GAT(num_layers=2,
-                       in_dim=768,
-                       num_hidden=512,
-                       num_classes=768,
-                       heads=([2] * 2) + [1],
-                       activation=F.elu,
-                       feat_drop=0,
-                       attn_drop=0,
-                       negative_slope=0.2,
-                       residual=False)
-
-        # Bilinear transformation for entity embeddings
-        self.entity_bilinear = nn.Bilinear(config.hidden_size, config.hidden_size, config.num_labels, bias=False)
-        self.node_embed_extractor = nn.Sequential(
-            nn.Linear(config.hidden_size * 4 + 1, 768 * 2),
-            nn.ReLU(),
-            nn.Linear(768 * 2, 768)
-        )
-
-        self.graph_layers = nn.ModuleList(
-                AttentionGCNLayer(self.edges, self.hidden_size, nhead=2, iters=1) for _ in
-                range(2))
-
-    def graph(self, head_embed, tail_embed, local_context):
-        batch_size = len(head_embed)
-        ns = []
-        for batch_id in range(batch_size):
-            hs = head_embed[batch_id]
-            ts = tail_embed[batch_id]
-            rs = local_context[batch_id]
-
-            ers = self.entity_bilinear(hs, ts)
-            cos = torch.cosine_similarity(hs, ts, dim=-1).unsqueeze(-1)
-            node_embed = torch.tanh(self.node_embed_extractor(torch.cat([hs, ts, cos, ers, rs], dim=-1)))
-            ns.append(node_embed)
-
-        for graph_layer in self.graph_layers:
-            ns = graph_layer(ns)
-            
-        return torch.cat(ns, dim=0)
-
-    
     def encode(self, input_ids, attention_mask):
         config = self.config
         if config.transformer_type == "bert":
@@ -87,7 +46,7 @@ class DocREModel(nn.Module):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"
                                                        ] else 0
         n, h, _, c = attention.size()
-        hss, tss, rss = [], [], []
+        hss, tss = [], [], []
         for i in range(len(entity_pos)):
             entity_embs, entity_atts = [], []
             for e in entity_pos[i]:
@@ -134,13 +93,31 @@ class DocREModel(nn.Module):
             tss.append(ts)
             rss.append(rs)
 
-        nss = self.graph(hss, tss, rss)
         hss = torch.cat(hss, dim=0)
         tss = torch.cat(tss, dim=0)
         rss = torch.cat(rss, dim=0)
-        return hss, rss, tss, nss
+        return hss, rss, tss
     
 
+    def get_channel_map(self, sequence_output, hts):
+        batch_size = len(hts)
+        map_rss = torch.zeros(batch_size, 42, 42, self.emb_size * self.block_size, device=sequence_output.device)
+
+        hs, rs, ts = self.get_hrt(sequence_output, None, self.entity_pos, hts)
+        hs = torch.tanh(self.head_extractor(torch.cat([hs, rs], dim=1)))
+        ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs], dim=1)))
+        b1 = hs.view(-1, self.emb_size // self.block_size, self.block_size)
+        b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)
+        bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.emb_size * self.block_size)
+
+        offset = 0
+        for b_idx, ht in enumerate(hts):
+            for pair_idx, (h_idx, t_idx) in enumerate(ht):
+                map_rss[b_idx, h_idx, t_idx] = bl[offset + pair_idx]
+            offset += len(ht)
+
+        return map_rss
+    
     def forward(self,
                 input_ids=None,
                 attention_mask=None,
@@ -149,15 +126,9 @@ class DocREModel(nn.Module):
                 hts=None):
 
         sequence_output, attention = self.encode(input_ids, attention_mask)
-        hs, rs, ts, ns = self.get_hrt(sequence_output, attention, entity_pos, hts)
-
-       
-        hs = torch.tanh(self.head_extractor(torch.cat([hs, rs, ns], dim=1)))
-        ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs, ns], dim=1)))
-        b1 = hs.view(-1, self.emb_size // self.block_size, self.block_size)
-        b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)
-        bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.emb_size * self.block_size)
-
+        map_rss = self.get_channel_map(sequence_output, hts)
+        feature_map = self.mlp(map_rss)
+        bl = 
         logits = self.bilinear(bl)
 
         output = (self.loss_fnt.get_label(logits,
