@@ -118,6 +118,15 @@ class DocREModel(nn.Module):
 
         return map_rss
     
+    def get_ht(self, rel_enco, hts):
+        htss = []
+        for i in range(len(hts)):
+            ht_index = hts[i]
+            for (h_index, t_index) in ht_index:
+                htss.append(rel_enco[i,h_index,t_index])
+        htss = torch.stack(htss,dim=0)
+        return htss
+    
     def forward(self,
                 input_ids=None,
                 attention_mask=None,
@@ -128,7 +137,8 @@ class DocREModel(nn.Module):
         sequence_output, attention = self.encode(input_ids, attention_mask)
         map_rss = self.get_channel_map(sequence_output, hts)
         feature_map = self.mlp(map_rss)
-        bl = 
+        bl = self.get_ht(feature_map)
+        
         logits = self.bilinear(bl)
 
         output = (self.loss_fnt.get_label(logits,
